@@ -43,6 +43,7 @@ sub init {
 	my $errorKey = Common::loadUserConfiguration();
 	Common::retreat($AppConfig::errorDetails{$errorKey}) if($errorKey > 1);
 	Common::displayHeader();
+	validateCorruption();
 	displayDescription();
 
 	my $tempBackupsetFilePath   = Common::getUserProfilePath()."/tempBackupsetFile.txt";
@@ -246,7 +247,7 @@ sub speedTestViaEVS {
 	my $backupLocation 			= "";
 
 	my $tempBackupsetFilePath   = $_[0];
-	my ($fh,$buffer,$fileSize);
+	my ($fh,$buffer,$fileSize,$buffer2);
 
 	Common::createUpdateBWFile();
 	Common::display(["\n",'starting_backup'], 1);
@@ -292,7 +293,7 @@ sub speedTestViaEVS {
 	my $idriveRes = '';
 	if(-e $evsErrorFile and -s $evsErrorFile){
 		$fileSize =  -s $evsErrorFile;
-        if(open($fh, "<", $evsErrorFile) and read($fh, $buffer, $fileSize)) {
+        if(open($fh, "<", $evsErrorFile) and read($fh, $buffer2, $fileSize)) {
 			close($fh);
 			# $reportMsg .= "Backup Error:".$buffer."\n";
         }
@@ -308,11 +309,18 @@ sub speedTestViaEVS {
 	unlink($evsOutputFile);
 
 	my $reportMsg = "Speed Test Summary:\n===================\n";
-	$reportMsg   .= "Speed test result with IDrive: [Upload speed: ".$idriveRes." Mbit/s]\n";
-	$reportMsg   .= "[Settings used:]\n";
-	$reportMsg   .= "Bandwidth throttle:".$buffer."\n";
-	$reportMsg   .= "Backup Start Time:".$backupStartTime."\n";
-	$reportMsg   .= "Backup End Time:".$backupEndTime."\n";	
+	if (defined $buffer2)
+	{
+		$reportMsg   .= "Backup Error:".$buffer2."\n";
+	}
+	else
+	{
+		$reportMsg   .= "Speed test result with IDrive: [Upload speed: ".$idriveRes." Mbit/s]\n";
+		$reportMsg   .= "[Settings used:]\n";
+		$reportMsg   .= "Bandwidth throttle:".$buffer."\n";
+		$reportMsg   .= "Backup Start Time:".$backupStartTime."\n";
+		$reportMsg   .= "Backup End Time:".$backupEndTime."\n";	
+	}
 	return $reportMsg;
 }
 
@@ -563,3 +571,32 @@ sub getSpeedTestResult {
 
 	return $speedInfo;
 }
+
+#*****************************************************************************************************
+# Subroutine			: validateCorruption
+# Objective				: exits the script if the IDPWD/IDPVT file is corrupted
+# Added By				: Rohit Nandwani
+# Modified By			: 
+#****************************************************************************************************/
+sub validateCorruption {
+	my @result;
+	if (Common::getUserConfiguration('DEDUP') eq 'on')
+	{
+		@result = Common::fetchAllDevices();
+	}
+	else
+	{
+		Common::createUTF8File('PING');
+		@result = Common::runEVS();
+	}
+
+	if ($result[0]->{'STATUS'} ne 'SUCCESS')
+	{
+		Common::retreat('your_account_not_configured_properly');
+	}
+
+	return;
+}
+
+
+

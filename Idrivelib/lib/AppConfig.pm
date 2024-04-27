@@ -17,10 +17,10 @@ our @EXPORT_OK = qw(TRUE FALSE STATUS SUCCESS FAILURE);
 
 use IxHash;
 
-our $version          = '2.37';
+our $version          = '2.38';
 my $buildVersion      = '';
 $version             .= "$buildVersion" if ($buildVersion ne '');
-our $releasedate      = '03-03-2023';
+our $releasedate      = '12-18-2023';
 our $appType          = 'IDrive';
 our $servicePathName    = lc($appType).'It';
 our $oldServicePathName = lc($appType);
@@ -30,7 +30,7 @@ our $language = 'EN';       # EN-ENGLISH
 our $staticPerlVersion    = '2.31';
 our $staticPerlBinaryName = 'perl';
 
-our $pythonVersion        = '2.37';
+our $pythonVersion        = '2.38';
 our $pythonBinaryName     = 'dashboard';
 
 our $appCron = lc($appType).'cron';
@@ -102,7 +102,7 @@ our $evsDedupBinaryName   = 'idevsutil_dedup';
 our $rRetryTimes          = 2;                   # Request retry for 2 more times(total 3).
 our $perlBin              = `which perl`;
 chomp($perlBin);
-if (exists $ENV{'_'} and $ENV{'_'} and not ($ENV{'_'} =~ m/$idriveDepPath/)) {
+if (exists $ENV{'_'} and $ENV{'_'} and not ($ENV{'_'} =~ m/$idriveDepPath/) and not ($ENV{'_'} =~ /idrive$/)) {
 	$perlBin = $ENV{'_'};
 }
 
@@ -122,6 +122,8 @@ our $deviceUIDPrefix = 'Linux';
 our $deviceUIDsuffix = '';
 our $deviceIDPrefix  = '5c0b';
 our $deviceIDSuffix  = '4b5z';
+
+our $bundlename		= "idriveforlinux.bin";
 
 our @dependencyBinaries = ('unzip', 'curl');
 
@@ -343,6 +345,7 @@ our $instprog		= '/tmp/instprog.log';
 our $instproglock	= '/tmp/instprog.lock';
 # our $silinstprog	= '/tmp/silent_inst.prog';
 our $silinstlock	= '/tmp/silent_inst.lock';
+our $silupdtlock	= '/tmp/silent_update.lock';
 our $misctask		= 'miscellaneous';
 our $miscjob		= 'install';
 our $defrescanday	= '01';
@@ -465,11 +468,14 @@ our $IDriveSupportEmail = 'support@'.lc($appType).'.com';
 
 # production download URL
 my $IDriveAppUrl = "https://www.idrivedownloads.com/downloads/linux/download-for-linux/IDrive_Scripts/IDriveForLinux.zip";
+our $packageDownloadURL = "https://www.idrivedownloads.com/downloads/linux/download-for-linux/linux-bin/";
+our $packageUpdater = "IDrive_updater_1.0.pl";
+our $packageUpdaterZip = "IDrive_updater_1.0.zip";
+our $packageUpdaterURL = "$packageDownloadURL$packageUpdaterZip";
 
 # production download URL
 my $IBackupAppUrl = "https://www.ibackup.com/online-backup-linux/downloads/download-for-linux/IBackup_for_Linux.zip";
-# SVN download URL
-#my $IBackupAppUrl = " -u deepak:deepak http://192.168.3.169/svn/linux_repository/trunk/PackagesForTesting/IBackupForLinux/IBackup_for_Linux.zip";
+
 our $accountSignupURL = "https://www.ibackup.com/newibackup/signup";
 $accountSignupURL = "https://www.idrive.com/idrive/signup" if($appType eq 'IDrive');
 
@@ -499,12 +505,13 @@ our %staticperlZipFiles = (
 	'freebsd' => ("idrive_dependency/$staticPerlVersion/freebsd/perl.zip"),
 );
 
+my $infix = "";
 our %pythonZipFiles = (
-	'32'      => ("idrive_dependency/$pythonVersion/__KVER__/x86/python.zip"),
-	'64'      => ("idrive_dependency/$pythonVersion/__KVER__/x86_64/python.zip"),
-	'arm'     => ("idrive_dependency/$pythonVersion/__KVER__/arm/python.zip"),
-	'aarch64' => ("idrive_dependency/$pythonVersion/__KVER__/aarch64/python.zip"),
-	'freebsd' => ("idrive_dependency/$pythonVersion/freebsd/python.zip"),
+	'32'      => ("idrive_dependency/$pythonVersion/${infix}__KVER__/x86/python.zip"),
+	'64'      => ("idrive_dependency/$pythonVersion/${infix}__KVER__/x86_64/python.zip"),
+	'arm'     => ("idrive_dependency/$pythonVersion/${infix}__KVER__/arm/python.zip"),
+	'aarch64' => ("idrive_dependency/$pythonVersion/${infix}__KVER__/aarch64/python.zip"),
+	'freebsd' => ("idrive_dependency/$pythonVersion/${infix}freebsd/python.zip"),
 );
 
 # We know that 32 bit works on 64 bit machines, so we give it a try

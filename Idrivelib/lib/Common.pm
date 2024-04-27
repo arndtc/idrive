@@ -11442,7 +11442,7 @@ sub isUpdateAvailable {
 	return 1 if (-f $updateInfoFile and !-z $updateInfoFile);
 
 	my $check4updateScript = getECatfile($appPath, 'check_for_update.pl');
-	$check4updateScript = updateLocaleCmd("$AppConfig::perlBin $check4updateScript checkUpdate");
+	$check4updateScript = "$AppConfig::perlBin $check4updateScript checkUpdate";
 	my $updateAvailStats = `$check4updateScript 1>/dev/null 2>/dev/null &`;
 
 	return 1 if (-f $updateInfoFile and !-z $updateInfoFile);

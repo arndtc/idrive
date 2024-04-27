@@ -303,6 +303,7 @@ sub init {
 		Common::createUserDir($isAccountConfigured); #unless($isAccountConfigured); Commented by Senthil to create dir for Local Restore
 		Common::saveUserQuota(@responseData) or Common::retreat("Error in save user quota");
 		Common::setUserConfiguration(@responseData);
+		Common::createEncodePwdFiles($upasswd);
 		Common::saveServerAddress(@responseData);
 	}
 
@@ -662,6 +663,9 @@ sub init {
 
 	if ($status == 2) {
 		Common::display(["\n", 'syncing_your_settings_please_wait'], 1);
+		
+		Common::confirmStartDashboard() if (!Common::isDashboardRunning());
+
 		if (Common::isDashboardRunning()) {
 			while(Common::isDashboardRunning()) {
 				last if (Common::loadNS() and not Common::getNS('update_device_info'));

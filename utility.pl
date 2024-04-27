@@ -105,9 +105,6 @@ sub performOperation {
 	elsif ($operation eq 'PREINSTDEPENDENCIES') {
 		interactiveDepInstall();
 	}
-	elsif ($operation eq 'DISPLAYPACKAGEDEP') {
-		displayPackageDep();
-	}
 	elsif ($operation eq 'VERIFYPREUPDATE') {
 		verifyPreUpdate();
 	}
@@ -205,15 +202,15 @@ sub performOperation {
 	elsif($operation eq "DISPCRONREBOOTCMD") {
 		displayCRONRebootCMD();
 	}
+	elsif($operation eq "UPDATEFROMDASHBOARD") {
+		doUpdateFromDashboard();
+	}
 	elsif($operation eq "PRINTVERSIONDATEFORDASHBOARD") {
 		printVersionDateForDashboard();
 	}
 	elsif($operation eq "PRINTVERSIONFORDASHBOARD") {
 		printVersionForDashboard();
 	}
-	# elsif($operation eq 'LAUNCHDEVICETRUSTCHECK') {
-	# 	requestDevicetrust();
-	# }
 	else {
 		Common::traceLog("Unknown operation: $operation");
 	}
@@ -305,45 +302,13 @@ sub disableAutoInstallCRON {
 	
 	my $freq = Common::getCrontab($AppConfig::misctask, $AppConfig::miscjob, '{settings}{frequency}');
 	Common::Chomp(\$freq);
-	
+
 	unless($freq) {
 		Common::setCrontab($AppConfig::misctask, $AppConfig::miscjob, {'settings' => {'status' => 'disabled'}});
 		Common::saveCrontab();
 	}
 
 	Common::unlockCriticalUpdate("cron");
-}
-
-#*****************************************************************************************************
-# Subroutine		: displayPackageDep
-# In Param			: UNDEF
-# Out Param			: UNDEF
-# Objective			: Prints required dependencies
-# Added By			: Sabin Cheruvattil
-#*****************************************************************************************************
-sub displayPackageDep {
-	my $deps;
-
-	# if (Common::checkCRONServiceStatus() ne Common::CRON_RUNNING) {
-		# $deps = {'pkg' => [], 'cpanpkg' => [], 'error' => 'cron_not_running'};
-	# }
-
-	if(Common::hasSQLitePreReq() && Common::hasBasePreReq() && (Common::hasFileNotifyPreReq() || !Common::canKernelSupportInotify())) {
-		$deps = {'pkg' => [], 'cpanpkg' => [], 'error' => ''};
-	} else {
-		my $os		= Common::getOSBuild();
-		my $pkgseq	= $AppConfig::depInstallUtils{$os->{'os'}}{'pkg-install'};
-		my $cpseq	= $AppConfig::depInstallUtils{$os->{'os'}}{'cpan-install'};
-
-		my ($packs, $cpanpacks);
-		($pkgseq, $packs)		= Common::getPkgInstallables($pkgseq);
-		($cpseq, $cpanpacks)	= Common::getCPANInstallables($cpseq);
-
-		$deps = {'pkg' => $packs, 'cpanpkg' => $cpanpacks, 'error' => ''};
-	}
-
-	Common::display(JSON::to_json($deps));
-	exit(0);
 }
 
 #*****************************************************************************************************
@@ -631,6 +596,38 @@ sub decryptEncrypt {
 		my $string = Common::encryptString(Common::getFileContents($sourceFile));
 		Common::fileWrite($destinationFile,$string);
 	}
+}
+
+#*****************************************************************************************************
+# Subroutine	: doUpdateFromDashboard
+# In Param		: UNDEF
+# Out Param		: UNDEF
+# Objective		: Schedules update from the dashboard
+# Added By		: Sabin Cheruvattil
+# Modified By	: 
+#*****************************************************************************************************
+sub doUpdateFromDashboard {
+	my $execmd	= Common::getScript('check_for_update') . " silent $AppConfig::mcUser dashboard";
+
+	my @now		= localtime;
+	my $stm		= $now[1] + 1;
+	$stm		= 0 if($stm > 59);
+
+	Common::lockCriticalUpdate("cron");
+	Common::loadCrontab(1);
+	Common::createCrontab($AppConfig::misctask, $AppConfig::miscjob);
+	Common::setCrontab($AppConfig::misctask, $AppConfig::miscjob, 'cmd', $execmd);
+	Common::setCrontab($AppConfig::misctask, $AppConfig::miscjob, {'settings' => {'status' => 'enabled'}});
+	Common::setCrontab($AppConfig::misctask, $AppConfig::miscjob, {'settings' => {'frequency' => ' '}});
+	Common::setCrontab($AppConfig::misctask, $AppConfig::miscjob, 'm', $stm);
+	Common::setCrontab($AppConfig::misctask, $AppConfig::miscjob, 'h', '*');
+	Common::saveCrontab();
+	Common::unlockCriticalUpdate("cron");
+
+	Common::fileWrite($AppConfig::silupdtlock, 1);
+	sleep(2) while(-f $AppConfig::silupdtlock);
+
+	disableAutoInstallCRON();
 }
 
 #*****************************************************************************************************

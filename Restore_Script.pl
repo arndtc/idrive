@@ -209,10 +209,6 @@ if(!pidAliveCheck()){
 	exit 1;
 }
 
-# if(!$silentFlag) {
-# 	Common::launchDevicetrustCheck();
-# }
-
 #Loading global variables
 my $RestoreItemCheck = $jobRunningDir."/"."RestoresetFile.txt.item"; #"RestoresetFile.txt.item";
 $statusFilePath = "$jobRunningDir/STATUS_FILE";

@@ -2690,7 +2690,13 @@ debug('get file size');
 				return 1;
 			}
 			
-			my $cmd = sprintf("%s %s silent &", $AppConfig::perlBin, Common::getScript('check_for_update', 1));
+			my $cmd = "";
+			if($AppConfig::mcUser eq "root") {
+				$cmd = sprintf("%s %s silent root dashboard &", $AppConfig::perlBin, Common::getScript('check_for_update', 1));
+			}
+			else {
+				$cmd = sprintf("%s %s UPDATEFROMDASHBOARD &", $AppConfig::perlBin, Common::getScript('utility', 1));
+			}
 
 			unless (system($cmd) == 0) {
 				$status{'status'} = AppConfig::FAILURE;

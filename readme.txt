@@ -820,3 +820,10 @@ IX. RELEASES
 	==============================================================================================================
 		1. Fixed: IDrive cron service installation in some of the platforms.
 		2. Minor bug fixes.
+
+	Build 2.38
+	==============================================================================================================
+		1. Added improvements in speed analysis.
+		2. Added improvements in update process.
+		3. Added improvements in dashboard connection.
+		4. Minor bug fixes.

@@ -7,6 +7,8 @@ $incPos = rindex(__FILE__, '/');
 $incLoc = ($incPos>=0)?substr(__FILE__, 0, $incPos): '.';
 unshift (@INC,$incLoc);
 
+my $silent = (defined($ARGV[0]) and ($ARGV[0] eq "silent"))? $ARGV[0] : '';
+
 require 'Header.pl';
 
 my $curl  = whichPackage(\"curl");
@@ -23,15 +25,15 @@ my (@linesCrontab, @idriveUsersList, @scheduledJobs, %idriveUserInfo) = () x 4;
 my $sudoprompt = "please_provide_" . (Common::hasSudo()? 'sudoers' : 'root') . '_pwd_for_uninstall_process';
 $sudoprompt = Common::getStringConstant($sudoprompt);
 
-my @fileNames = ('account_setting.pl','Account_Setting.pl','archive_cleanup.pl','check_for_update.pl','Check_For_Update.pl','Backup_Script.pl','Constants.pm','Header.pl','Job_Termination_Script.pl','job_termination.pl','login.pl','Login.pl','logout.pl','Operations.pl','readme.txt','Restore_Script.pl','restore_version.pl','Restore_Version.pl','Scheduler_Script.pl','Status_Retrieval_Script.pl','status_retrieval.pl','edit_supported_files.pl','edit_supported_files.pl','View_Log.pl','logs.pl','Uninstall_Script.pl','.updateVersionInfo','.serviceLocation','freshInstall','.forceupdate','wgetLog.txt','AppConfig.pm', 'Common.pm','Configuration.pm', 'Helpers.pm','IxHash.pm', 'Strings.pm','local_backup.pl','local_restore.pl','send_error_report.pl', 'JSON.pm', 'utility.pl', 'view_log.pl','speed_analysis.pl', 'scheduler.pl', 'cron.pl', 'help.pl', 'idrivecron.service', 'idrivecron.conf', 'idrivecron', 'Idrivelib','uninstallcron.pl', 'relinkcron.pl', 'installcron.pl', 'dashboard.pl', 'migrateSuccess', 'migrate.lock', 'ca-certificates.crt', 'perl.core', 'debug.enable', '.haltcdp', 'cdp_client.pl', 'cdp_server.pl');
+my @fileNames = ('account_setting.pl', 'Account_Setting.pl', 'archive_cleanup.pl', 'check_for_update.pl', 'Check_For_Update.pl', 'Backup_Script.pl', 'Constants.pm', 'Header.pl', 'Job_Termination_Script.pl', 'job_termination.pl', 'login.pl', 'Login.pl', 'logout.pl', 'Operations.pl', 'readme.txt', 'Restore_Script.pl', 'restore_version.pl', 'Restore_Version.pl', 'Scheduler_Script.pl', 'Status_Retrieval_Script.pl', 'status_retrieval.pl','edit_supported_files.pl', 'Edit_Supported_Files.pl', 'View_Log.pl', 'logs.pl', 'Uninstall_Script.pl', '.updateVersionInfo', '.serviceLocation', 'freshInstall', '.forceupdate', 'wgetLog.txt', 'AppConfig.pm', 'Common.pm','Configuration.pm', 'Helpers.pm','IxHash.pm', 'Strings.pm', 'local_backup.pl', 'local_restore.pl', 'send_error_report.pl', 'JSON.pm', 'utility.pl', 'view_log.pl', 'speed_analysis.pl', 'scheduler.pl', 'cron.pl', 'help.pl', 'idrivecron.service', 'idrivecron.conf', 'idrivecron', 'Idrivelib', 'uninstallcron.pl', 'relinkcron.pl', 'installcron.pl', 'dashboard.pl', 'migrateSuccess', 'migrate.lock', 'ca-certificates.crt', 'perl.core', 'debug.enable', '.haltcdp', 'cdp_client.pl', 'cdp_server.pl');
 
-system("clear");
+system("clear") if(!$silent);
 
 Common::loadAppPath();
 Common::loadServicePath() or $noServicePath=1;
-Common::displayHeader();
+Common::displayHeader() if(!$silent);
 
-if(!$noServicePath && !Common::isLoggedin()) {
+if(!$noServicePath and !Common::isLoggedin() and !$silent) {
 	unless (Common::hasPythonBinary()) {
 		Common::display(['downloading_python_binary', '... ']);
 		Common::downloadPythonBinary() or Common::retreat('unable_to_download_python_binary');
@@ -74,7 +76,7 @@ if(!$noServicePath && !Common::isLoggedin()) {
 }
 
 # goto REMOVESCRIPTS if($noServicePath);
-unless($noServicePath) {
+if(!$noServicePath) {
     #Getting IDrive user list
     @idriveUsersList = getIDriveUserList();
     if(scalar @idriveUsersList>0) {
@@ -109,23 +111,18 @@ unless($noServicePath) {
         }
     }
 
-    # if($noPermission){
-        # #print $lineFeed.$errorReason.$lineFeed;
-        # #exit;
-    # }
-
     #Get confirmation to uninstall the package.
-    print $lineFeed.Constants->CONST->{'AskUninstallConfig'}->($AppConfig::appType).$whiteSpace;
-    $confirmationChoice = getConfirmationChoice();
-    exit(1) if(lc($confirmationChoice) eq "n");
+    if(!$silent) {
+		print $lineFeed.Constants->CONST->{'AskUninstallConfig'}->($AppConfig::appType).$whiteSpace;
+		$confirmationChoice = getConfirmationChoice();
+		exit(1) if(lc($confirmationChoice) eq "n");
+	}
 
-    if(scalar @idriveUsersList>1) {
+    if ((scalar(@idriveUsersList) > 1) and !$silent) {
         #Get confirmation to uninstall the package when more than one user using this script.
         print $lineFeed.Constants->CONST->{'multiUserConfirm'}.$whiteSpace;
         $confirmationChoice = getConfirmationChoice();
-        if($confirmationChoice eq "N" || $confirmationChoice eq "n") {
-            exit 0;
-        }
+        exit 0 if(lc($confirmationChoice) eq "n");
     }
 
     getUsersInfoToUninstall(); #Getting IDrive users info
@@ -134,7 +131,7 @@ unless($noServicePath) {
     my $sudosucmd = getSudoSuCRONPerlCMD('uninstallcron', "\n" . $sudomsgtoken);
 
     if(system($sudosucmd) == 0) {
-        print $lineFeed.$AppConfig::appType.Constants->CONST->{'cronUninstalled'}.$lineFeed;
+        print $lineFeed.$AppConfig::appType.Constants->CONST->{'cronUninstalled'}.$lineFeed if(!$silent);
     }
 	else {
         print $lineFeed.Constants->CONST->{'UnableToUninstallCron'}->($AppConfig::appType).$lineFeed;
@@ -145,9 +142,11 @@ unless($noServicePath) {
     if(scalar @idriveUsersList > 0) {
         if($pidsToBeKilled ne '') {
             #Get confirmation to uninstall the package If any job is in progress.
-            print $lineFeed . Constants->CONST->{'OneJobsRunning'} . $whiteSpace;
-            $confirmationChoice = getConfirmationChoice();
-            exit(0) if($confirmationChoice eq "N" || $confirmationChoice eq "n");
+            if(!$silent) {
+				print $lineFeed . Constants->CONST->{'OneJobsRunning'} . $whiteSpace;
+				$confirmationChoice = getConfirmationChoice();
+				exit(0) if(lc($confirmationChoice) eq "n");
+			}
 
             $unlinkPidFile=1;
             $pidsToBeKilled = getAllRunningJobsPids();
@@ -322,7 +321,7 @@ sub removeServiceDirectory
 		return 0;
 	}
 
-	print $lineFeed . Constants->CONST->{'DirectoryRemoved'}->('Service directory', $idriveServicePath) . $lineFeed;
+	print $lineFeed . Constants->CONST->{'DirectoryRemoved'}->('Service directory', $idriveServicePath) . $lineFeed if(!$silent);
 	return 1;
 }
 
@@ -331,8 +330,7 @@ sub removeServiceDirectory
 # Objective               : Removing the script files
 # Added By                : Senthil Pandian
 #*****************************************************************************************************/
-sub removeScriptFiles
-{
+sub removeScriptFiles {
 	foreach $file (@fileNames){
 		my $filePath = "$currentDir/$file";
 		if (-f $filePath) {
@@ -355,12 +353,7 @@ sub removeScriptFiles
 # Added By                : Senthil Pandian
 # Modified By             : Senthil Pandian, Vijay Vinoth
 #*****************************************************************************************************/
-sub removeScriptDirectory
-{
-	my $pwdCmd = 'pwd';
-	$pwd = `$pwdCmd 2>/dev/null`;
-	chomp($pwd);
-
+sub removeScriptDirectory {
 	return 0 if(!isDirectoryEmpty($currentDir));
 
 	$rmCmd = "rm -rf '$currentDir' 2>/dev/null";
@@ -436,9 +429,9 @@ sub getRunningJobPid
 	$tempCurrentDir =~ s/{/[{]/;
 	my $uninstallScript      = Common::getCatfile($tempCurrentDir, $AppConfig::idriveScripts{'uninstall_script'});
 	my $checkForUpdateScript = Common::getCatfile($tempCurrentDir, $AppConfig::idriveScripts{'check_for_update'});
-	
-	$evsCmd   = "ps $psOption | grep \"$tempCurrentDir\" | grep -v \'grep\' | grep -v \"$uninstallScript\" | grep -v \"$checkForUpdateScript\"";
-	$evsCmd = Common::updateLocaleCmd($evsCmd);
+
+	$evsCmd   = "ps $psOption | grep \"$tempCurrentDir\" | grep -v \'grep\' | grep -v \"$uninstallScript\" | grep -v \"$checkForUpdateScript\" | grep -v \"$AppConfig::bundlename\" | grep -v \"$AppConfig::packageUpdater\"";
+	# $evsCmd = Common::updateLocaleCmd($evsCmd);
 	$evsRunning .= `$evsCmd`;
 
 	if($jobRunningDir =~ /Restore/) {
@@ -472,6 +465,7 @@ sub getRunningJobPid
 			push(@pids, $pid);
 		}
 	}
+
 	chomp(@pids);
 	s/^\s+$// for (@pids);
 
