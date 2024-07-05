@@ -26,7 +26,8 @@ sub cronabs {
 	return ((-l __FILE__)? abs_path(readlink(__FILE__)) : dirname(__FILE__));
 }
 
-use lib map{if(cronabs() =~ /\//) { substr(cronabs(), 0, rindex(cronabs(), '/'))."/$_";} else { "./$_"; }} qw(Idrivelib/lib);
+use lib map{if(cronabs() =~ /\//) { substr(cronabs(), 0, rindex(cronabs(), '/')) . "/$_";} else { "./$_"; }} qw(Idrivelib/lib);
+use lib map{if (__FILE__ =~ /\//) { if ($_ eq '.') {substr(__FILE__, 0, rindex(__FILE__, '/'));} else {substr(__FILE__, 0, rindex(__FILE__, '/')) . "/$_";}} else {if ($_ eq '.') {substr(__FILE__, 0, rindex(__FILE__, '/'));} else {"./$_";}}} qw(Idrivelib/lib .);
 
 use AppConfig;
 use Common;
@@ -96,6 +97,7 @@ sub init {
 	if ($AppConfig::appType eq 'IDrive') {
 		my $dashcrontab = Common::getCrontab();
 		launchDashboardJobs($dashcrontab);
+		launchCDPJobs($dashcrontab);
 	}
 
 	my $prevtimesec = time();
@@ -149,8 +151,16 @@ sub init {
 		# Handle empty cron tab file
 		if(-z Common::getCrontabFile()) {
 			benchmark("empty cron tab, sleeping");
-			sleep(5);
+			sleep(20);
 			next;
+		}
+
+		# Launch dashboard and cron jobs once a day
+		my ($locmin, $lochour, $locdom, $locmon, $locdow, $locyear) = (localtime)[1, 2, 3, 4, 6, 5];
+		if($locmin == 1 && $lochour == 1 && $AppConfig::appType eq 'IDrive') {
+			my $dashcrontab = Common::getCrontab();
+			launchDashboardJobs($dashcrontab);
+			launchCDPJobs($dashcrontab);
 		}
 
 		# if modified time stamp is greater than the previous time stamp, then load cron tab again
@@ -180,7 +190,7 @@ sub init {
 			while($timeIndex - 10 > 10) {
 				my @lockinfo 	= Common::getCRONLockInfo();
 				# exit if not lock process id same
-				exit(0) if ($$ != $lockinfo[0]);
+				exit(0) if ($lockinfo[0] && $$ != $lockinfo[0]);
 
 				bootloadCronRestart() if (defined($lockinfo[2]) && $lockinfo[2] eq 'restart');
 				sleep(10);
@@ -220,7 +230,7 @@ sub getEntries {
 			next if(defined($_[0]->{$mcusername}{$username}{'otherInfo'}) && $_[0]->{$mcusername}{$username}{'otherInfo'}{'settings'}{'status'} eq 'INACTIVE');
 
 			foreach my $jobType (keys %{$_[0]->{$mcusername}{$username}}) {
-				next if($jobType eq $AppConfig::dashbtask || $jobType eq 'otherInfo');
+				next if($jobType eq $AppConfig::dashbtask || $jobType eq $AppConfig::cdpwatcher || $jobType eq 'otherInfo');
 
 				foreach(keys %{$_[0]->{$mcusername}{$username}{$jobType}}) {
 					$indjob = $_[0]->{$mcusername}{$username}{$jobType}{$_};
@@ -283,7 +293,7 @@ sub getEntries {
 # Modified By			: Yogesh Kumar
 #****************************************************************************************************/
 sub launchDashboardJobs {
-	return 0 unless (Common::hasStaticPerlSupport());
+	return 0 unless (Common::hasDashboardSupport());
 
 	my $djobs = $_[0];
 	return 0 unless(%{$djobs});
@@ -303,6 +313,42 @@ sub launchDashboardJobs {
 				$dashcmd	=~ s/'/'\\''/g;
 				$dashcmd 	= "$userModUtilCMD $mcusername -c '" . Common::getIDrivePerlBin() . " \"$dashcmd\" &'";
 				system($dashcmd);
+			}
+		}
+	}
+}
+
+#*****************************************************************************************************
+# Subroutine			: launchCDPJobs
+# Objective				: This function is to execute the CDP jobs
+# Added By				: Vijay Vinoth
+# Modified By			: Sabin Cheruvattil
+#****************************************************************************************************/
+sub launchCDPJobs {
+	my $djobs = $_[0];
+	return 0 unless(%{$djobs});
+
+	my $userModUtilCMD	= Common::getUserModUtilCMD();
+	foreach my $mcusername (keys %{$djobs}) {
+		foreach my $username (keys %{$djobs->{$mcusername}}) {
+			# CDP from this user is disabled | go to next idriveuser
+			next if(defined($djobs->{$mcusername}{$username}{'otherInfo'}) && $djobs->{$mcusername}{$username}{'otherInfo'}{'settings'}{'status'} eq 'INACTIVE');
+
+			next if(!defined($djobs->{$mcusername}{$username}{$AppConfig::cdpwatcher}) ||
+				!%{$djobs->{$mcusername}{$username}{$AppConfig::cdpwatcher}{$AppConfig::cdpwatcher}} ||
+				$djobs->{$mcusername}{$username}{$AppConfig::cdpwatcher}{$AppConfig::cdpwatcher}{'cmd'} eq '');
+
+			my $cdpcmd = $djobs->{$mcusername}{$username}{$AppConfig::cdpwatcher}{$AppConfig::cdpwatcher}{'cmd'};
+			if($userModUtilCMD ne '') {
+				unless($AppConfig::perlBin) {
+					my $perlBin = Common::getPerlBinaryPath();
+					$AppConfig::perlBin = $perlBin;
+					$AppConfig::perlBin = 'perl' unless(-f $perlBin);
+				}
+
+				$cdpcmd	=~ s/'/'\\''/g;
+				$cdpcmd = "$userModUtilCMD $mcusername -c '" . $AppConfig::perlBin . " $cdpcmd &'";
+				system($cdpcmd);
 			}
 		}
 	}
@@ -335,6 +381,7 @@ sub execute {
 			$AppConfig::perlBin = $perlBin;
 			$AppConfig::perlBin = 'perl' unless(-f $perlBin);
 		}
+
 		$escapeCMD	=~ s/'/'\\''/g;
 		$escapeCMD	= "$userModUtilCMD $cronmcuser -c '$AppConfig::perlBin $escapeCMD &'";
 

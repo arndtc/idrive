@@ -62,17 +62,12 @@ sub init {
 
 	Common::display(["\n", 'sending_error_report']);
 	# send email to server
-	my $reportEmailCont = qq(Email=) . Common::urlEncode($AppConfig::IDriveSupportEmail) . qq(&subject=) . Common::urlEncode($reportSubject);
-	$reportEmailCont   .= qq(&content=) . Common::urlEncode($reportContents) . qq(&user_email=) . Common::urlEncode($reportInputs{'reportUserEmail'});
-
-	my %params = (
-		'host'   => $AppConfig::IDriveErrorCGI,
-		'method' => 'GET',
-		'encDATA'=> $reportEmailCont,
-	);
-
-	#my $response = Common::request(\%params);
-	my $response = Common::requestViaUtility(\%params);
+	my $response = Common::makeRequest(3, [
+									$AppConfig::IDriveSupportEmail,
+									$reportSubject,
+									$reportContents,
+									$reportInputs{'reportUserEmail'}
+								], 2);
 	if(!$response || (reftype \$response eq 'REF' && $response->{STATUS} ne 'SUCCESS')) {
 		Common::retreat('failed_to_report_error');
 		return;
@@ -188,7 +183,9 @@ sub getReportMailContent {
 	my %reportInputs = @_;
 	my ($reportContent, $logContent) = ('', '');
 	my $osd = Common::getOSBuild();
-	my $proxyEnabled = Common::isProxyEnabled()? 'Yes' : 'No';
+	my $proxyEnabled	= Common::isProxyEnabled()? 'Yes' : 'No';
+	my $cdpsupport		= Common::canKernelSupportInotify()? 'Yes' : 'No';
+	my $cronstat		= Common::getStringConstant((Common::checkCRONServiceStatus() == Common::CRON_RUNNING)? 'c_running' : 'c_stopped');
 
 	$reportContent .= "<<< Feedback from $AppConfig::appType ".Common::getStringConstant('linux_backup')." - $AppConfig::version >>> \n";
 	$reportContent .= Common::getStringConstant('machine_details').": $AppConfig::machineOS \n";
@@ -196,9 +193,13 @@ sub getReportMailContent {
 	$reportContent .= Common::getStringConstant('computer_name').": $AppConfig::hostname \n";
 	$reportContent .= Common::getStringConstant('profile_name').": " . $AppConfig::mcUser . qq( \n);
 	$reportContent .= Common::getStringConstant('proxy_server').": $proxyEnabled \n";
+	$reportContent .= Common::getStringConstant('cron_job').": $cronstat \n";
+	$reportContent .= Common::getStringConstant('cdp_suppport').": $cdpsupport \n";
 	$reportContent .= qq($AppConfig::appType ) . ucfirst(Common::getStringConstant('username')).": ".$reportInputs{'reportUserName'}."\n";
 
-	if (Common::loadStorageSize() or Common::reCalculateStorageSize()) {
+	# No need to explicitly call quota recalculation as we already have called the same from header display.
+	# if (Common::loadStorageSize() or Common::reCalculateStorageSize()) {
+	if (Common::loadStorageSize()) {
 		$reportContent .= Common::getStringConstant('total_quota').": " . Common::getTotalStorage() . qq( \n);
 		$reportContent .= Common::getStringConstant('used_space').": " . Common::getStorageUsed() . qq( \n);
 	}

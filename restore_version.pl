@@ -14,7 +14,7 @@ use File::Path;
 use File::Basename;
 use Time::Local;
 
-my ($lastVersion, $fullFilePath) = (10, '');
+my ($lastVersion, $fullFilePath) = (30, '');
 tie(my %mainMenuOptions, 'Tie::IxHash', '1' => 'display_versions_for_your_file', '2' => 'restore_a_specific_version_of_your_file');
 
 Common::waitForUpdate();
@@ -28,16 +28,17 @@ init();
 # Added By				: Sabin Cheruvattil
 #****************************************************************************************************/
 sub init {
-	my @parsedVersionData = '';
+	my @parsedVersionData = ();
 
-	system(Common::updateLocaleCmd('clear'));
+	system('clear');
 	Common::loadAppPath();
 	Common::loadServicePath() or Common::retreat('invalid_service_directory');
-	Common::loadUsername()    or Common::retreat('login_&_try_again');
+	Common::verifyVersionConfig();
+	Common::loadUsername() or Common::retreat('login_&_try_again');
 	my $errorKey = Common::loadUserConfiguration();
 	Common::retreat($AppConfig::errorDetails{$errorKey}) if ($errorKey > 1);
 	Common::loadEVSBinary() or Common::retreat('unable_to_find_or_execute_evs_binary');
-	Common::isLoggedin()    or Common::retreat('login_&_try_again');
+	Common::isLoggedin() or Common::retreat('login_&_try_again');
 
 	Common::displayHeader();
 	Common::checkAccountStatus(1);
@@ -97,7 +98,7 @@ sub restoreVersion {
 #*************************************************************************************************
 # Subroutine			: createRestoresetFile.
 # Objective				: create RestoresetFile based on user's given version number.
-# Modified By			: Sabin Cheruvattil
+# Modified By			: Sabin Cheruvattil, Senthil Pandian
 #*************************************************************************************************
 sub createRestoresetFile {
 	my @parsedVersionData = @{$_[0]};
@@ -108,15 +109,24 @@ sub createRestoresetFile {
 	Common::display('');
 
 	# If the restore location is changed, it must be acknowledged to user before restore script clear the screen. So adding a wait of 2 sec.
-	sleep(2) if (Common::getUserConfiguration('RESTORELOCATIONPROMPT') && Common::editRestoreLocation(1));
+	if(Common::getUserConfiguration('RESTORELOCATIONPROMPT')) {
+        Common::editRestoreLocation(1);
+        unless(-w Common::getUserConfiguration('RESTORELOCATION')) {
+            my $errStr = Common::getStringConstant('operation_could_not_be_completed_reason').Common::getStringConstant('invalid_restore_location');
+            Common::retreat(["\n",$errStr]);
+        } else {
+            Common::display("");
+            sleep(2);
+        }
+    }
 
 	#this will give file size for selected version.
-	my $fileVersionSize = (scalar @parsedVersionData > 0)? $parsedVersionData[(($versionNo - 1) * 4) + 2] : '';
+	my $fileVersionSize = (scalar @parsedVersionData > 0)? $parsedVersionData[(($versionNo * 3)-1)] : '';
 	$fileVersionSize = '' unless $fileVersionSize;
 
 	my $jobRunningDir  = Common::getJobsPath('restore');
 	my $restoresetFile = qq($jobRunningDir/$AppConfig::versionRestoreFile);
-	open(FILE, ">", $restoresetFile) or Common::traceLog('couldnt_open'," $restoresetFile ",'for_restore_version_option', 'reason', ": $!");
+	open(FILE, ">", $restoresetFile) or Common::traceLog(['couldnt_open', " $restoresetFile ", 'for_restore_version_option', 'reason', ": $!"]);
 	chmod $AppConfig::filePermission, $restoresetFile;
 	print FILE $fullFilePath . '_IBVER' . $versionNo . "\n" . $fileVersionSize . "\n";
 	close FILE;
@@ -137,11 +147,14 @@ sub displayTableforVersionData {
 	my ($tableContent, $spaceIndex, $lineChangeIndicator) = ("", 0, 0);
 
 	foreach(@parsedVersionData) {
-		$tableContent .= $_ . (' ') x ($columnNames[1]->[$spaceIndex] - length($_));
+		
 		if ($lineChangeIndicator == 2) {
+            my $size = Common::getHumanReadableSizes($_);
+            $tableContent .= $size . (' ') x ($columnNames[1]->[$spaceIndex] - length($size));
 			$tableContent .= "\n";
 			($lineChangeIndicator, $spaceIndex) = (0) x 2;
 		} else {
+            $tableContent .= $_ . (' ') x ($columnNames[1]->[$spaceIndex] - length($_));
 			$spaceIndex++;
 			$lineChangeIndicator += 1;
 		}
@@ -169,17 +182,18 @@ sub getFileVersions {
 								'cleanupOperation' => sub {Common::display(['exiting_title']); exit(0);}
 							};
 
-	# system("clear");
 	if ($result[0]{'STATUS'} eq 'FAILURE') {
 		my $errorMessage = $result[0]{'MSG'};
 		$errorMessage =~ s/^\s+|\s+$//g;
+
 		if ($errorMessage ne '') {
 			if ($errorMessage =~ /password mismatch|encryption verification failed|encryption_verification_failed/i) {
+				Common::createBackupStatRenewalByJob('backup') if(Common::getUserConfiguration('DEDUP') ne 'on');
 				Common::display([$errorMessage, '. ', 'please_login_account_using_login_and_try']);
 				unlink(Common::getIDPWDFile());
 			}
-			elsif ($errorMessage =~ /failed to get the device information|Invalid device id/i) {
-				Common::display([$errorMessage, '. ', Common::getStringWithScriptName('invalid_res_loc_edit_loc_acc_settings'), "\n"]);
+			elsif ($errorMessage =~ /failed to get the device information|Invalid device id/gi) {
+				Common::display(['invalid_res_loc_edit_loc_acc_settings', "\n"]);
 			}
 			elsif ($errorMessage =~/No version found/i || $errorMessage =~ /path not found/i) {
 				Common::display([$errorMessageHandler->{"$&"}]);
@@ -189,10 +203,11 @@ sub getFileVersions {
 				Common::retreat('unable_to_find_your_restore_location');
 			}
 			else {
-				$errorMessage = Common::checkErrorAndLogout($errorMessage);
+				$errorMessage = Common::checkErrorAndLogout($errorMessage, undef, 1);
 				Common::display([$errorMessage, "\n"]);
 			}
 		}
+
 		$errorMessageHandler->{'cleanupOperation'}->();
 	}
 
@@ -215,7 +230,7 @@ sub parseVersionData {
 		# push(@fileVersionData, $serialNumber);
 		push(@fileVersionData, $_[($serialNumber - 1)]{'ver'});#0 -> contains version
 		push(@fileVersionData, $_[($serialNumber - 1)]{'mod_time'});#1 -> contains modified date
-		push(@fileVersionData, Common::getHumanReadableSizes($_[($serialNumber - 1)]{'size'}));
+        push(@fileVersionData, $_[($serialNumber - 1)]{'size'});
 		$serialNumber ++;
 	}
 

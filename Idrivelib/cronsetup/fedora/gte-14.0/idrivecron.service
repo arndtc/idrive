@@ -3,7 +3,7 @@
 
 [Unit]
 Description=__APP__ Scheduler
-After=auditd.service nss-user-lookup.target systemd-user-sessions.service time-sync.target ypbind.service
+After=local-fs.target multi-user.target
 
 [Service]
 ExecStart=__LAUNCHPATH__

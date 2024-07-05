@@ -26,18 +26,20 @@ sub init {
 
 	Common::loadAppPath();
 	Common::loadServicePath() or Common::retreat('invalid_service_directory');
+	Common::verifyVersionConfig();
 	Common::loadUsername();
-
 	if (defined($ARGV[2]) and $ARGV[2] eq 'NOUSERINPUT') {
 		terminateAndLogoutAllUsers();
 		exit;
 	}
 	elsif (!Common::isLoggedin()) {
-		$AppConfig::displayHeader = 0;
-		Common::retreat('no_user_is_logged_in');
+		# $AppConfig::displayHeader = 0;
+		# Common::retreat('no_user_is_logged_in');
+        Common::display('no_user_is_logged_in');
+        exit;
 	}
 
-	my $errorMsg = '';
+	my $errorMsg = 'operation_cancelled_due_to_logout';
 	my $jobType  = 1;
 	$jobType = ${ARGV[1]} if (defined $ARGV[1]);
 
@@ -66,10 +68,10 @@ sub init {
 		}
 
 		if ($choice eq 'y') {
-			my $cmd = sprintf("%s %s 'allOp' %s %s 'allType' %s", $AppConfig::perlBin, Common::getScript('job_termination', 1), Common::getUsername(), $jobType, $AppConfig::mcUser);
+			my $cmd = sprintf("%s %s 'allOp' %s %s 'allType' %s %s", $AppConfig::perlBin, Common::getScript('job_termination', 1), Common::getUsername(), $jobType, $AppConfig::mcUser, $errorMsg);
 			my $res;
 			$cmd = Common::updateLocaleCmd($cmd);
-			$res = `$cmd $errorMsg 1>/dev/null 2>/dev/null`;
+			$res = `$cmd 1>/dev/null 2>/dev/null`;
 			if (($? != 0) or ($res =~ /Operation not permitted/)) {
 				Common::retreat(['unable_to_logout', ' ', 'system_user', " $AppConfig::mcUser ", 'does_not_have_sufficient_permissions']);
 			}
@@ -114,7 +116,7 @@ sub terminateAndLogoutAllUsers {
 			my $userName    = $usrProfileDir[0];
 			chop($usrProfileDir[1]);
 			my $profileName = (Common::fileparse($usrProfileDir[1]))[0];
-			my $cmd = sprintf("%s %s 'allOp' %s %s 'allType' %s", $AppConfig::perlBin, Common::getScript('job_termination', 1), $userName, 0, $profileName);
+			my $cmd = sprintf("%s %s 'allOp' %s %s 'allType' %s %s", $AppConfig::perlBin, Common::getScript('job_termination', 1), $userName, 0, $profileName, 'operation_cancelled_due_to_logout');
 			my $res;
 			$cmd = Common::updateLocaleCmd($cmd);
 			$res = `$cmd 1>/dev/null 2>/dev/null`;

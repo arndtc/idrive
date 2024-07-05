@@ -18,7 +18,8 @@ our %propFields = (
 	DefaultBackupSet  => '', LocalBackupSet => '', lst_fullexclude => '',
 	lst_partexclude => '', lst_regexexclude => '', nxttrftime  => '',
 	freq => '', cutoff => '', email  => '',
-	mailnoti => '', txt_mpc => '',
+	mailnoti => '', txt_mpc => '', chk_cdp => '',
+	cmb_cdp => '', verify_bkset => '',
 );
 
 my %prop = (
@@ -415,7 +416,7 @@ my %extractFields = (
 			$d = int($d->{'value'});
 		}
 
-		$_[1]->{'content'}{'user_settings'}{'ENGINECOUNT'} = ($d ? 4 : 2);
+		$_[1]->{'content'}{'user_settings'}{'ENGINECOUNT'} = ($d ? $AppConfig::maxEngineCount : $AppConfig::minEngineCount);
 	},
 
 	show_hidden => sub {
@@ -464,6 +465,44 @@ my %extractFields = (
 		}
 		$_[1]->{'content'}{'user_settings'}{'NMB'} = $d1;
 	},
+
+	chk_cdp => sub {
+		my $d = eval { from_json($_[0]->{'chk_cdp'}) };
+		if ($@) {
+			$d = int($_[0]->{'chk_cdp'});
+		}
+		else {
+			$d = int($d->{'value'});
+		}
+
+		my $d1 = eval { from_json($_[0]->{'cmb_cdp'}) };
+		if ($@) {
+			$d1 = (split(" ", $_[0]->{'cmb_cdp'}))[0];
+		}
+		else {
+			$d1 = (split(" ", $d1->{'value'}))[0];
+		}
+
+		unless ($d) {
+			$d1 = '0';
+		}
+		if ($d1 eq 'Real-time') {
+			$d1 = 1;
+		}
+		$_[1]->{'content'}{'user_settings'}{'CDP'} = int($d1);
+	},
+
+	verify_bkset => sub {
+		my $d = eval { from_json($_[0]->{'verify_bkset'}) };
+		if ($@) {
+			$d = $_[0]->{'verify_bkset'};
+		}
+		else {
+			$d = $d->{'value'};
+		}
+
+		$_[1]->{'content'}{'user_settings'}{'RESCANINTVL'} = $d;
+	},
 );
 
 #*****************************************************************************************************
@@ -495,7 +534,7 @@ sub parseSch {
 			$jobName = 'default_backupset';
 		}
 		elsif ($_->{'bksetname'} =~ /^LocalBackupSet/) {
-			$jobType = 'express_backup';
+			$jobType = 'local_backup';
 			$jobName = 'local_backupset';
 		}
 
@@ -530,7 +569,7 @@ sub parseSchForDHB {
 			'*' => '1234567'
 		);
 		foreach (keys %{$_[0]->{$_[1]}}) {
-#			next if ($_[0]->{$_[1]}{$_}{'settings'}{'status'} eq 'disabled');
+			# next if ($_[0]->{$_[1]}{$_}{'settings'}{'status'} eq 'disabled');
 
 			my %sd = ();
 
@@ -773,17 +812,34 @@ sub parseArchiveCleanup2 {
 		my $arch_cleanup_checked = from_json($_[0]->[0]->{'arch_cleanup_checked'});
 		my $freq_days = from_json($_[0]->[0]->{'freq_days'});
 		my $freq_percent = from_json($_[0]->[0]->{'freq_percent'});
+		my $arch_email = from_json($_[0]->[0]->{'arch_email'});
 
 		return {} if ($arch_cleanup_checked->{'value'} eq '');
 
 		$archiveSettings{'settings'}{'status'} = (int($arch_cleanup_checked->{'value'}) ? 'enabled':'disabled');
-		$archiveSettings{'cmd'} = "$freq_days->{'value'} $freq_percent->{'value'}";
+		$archiveSettings{'cmd'} = "$freq_days->{'value'} $freq_percent->{'value'} 0";
+
+		if ($arch_email->{'value'} eq "") {
+			$archiveSettings{'settings'}{'emails'}{'status'} = 'disabled';
+		}
+		else {
+			$archiveSettings{'settings'}{'emails'}{'status'} = 'notify_always';
+			$archiveSettings{'settings'}{'emails'}{'ids'}    = $arch_email->{'value'};
+		}
 	}
 	else {
 		return {} if ($_[0]->{'arch_cleanup_checked'} eq '');
 
 		$archiveSettings{'settings'}{'status'} = (int($_[0]->{'arch_cleanup_checked'}) ? 'enabled':'disabled');
-		$archiveSettings{'cmd'} = "$_[0]->{'freq_days'} $_[0]->{'freq_percent'}";
+		$archiveSettings{'cmd'} = "$_[0]->{'freq_days'} $_[0]->{'freq_percent'} 0";
+
+		if ($_[0]->{"arch_email"} eq "") {
+			$archiveSettings{'settings'}{'emails'}{'status'} = 'disabled';
+		}
+		else {
+			$archiveSettings{'settings'}{'emails'}{'status'} = 'notify_always';
+			$archiveSettings{'settings'}{'emails'}{'ids'}    = $_[0]->{"arch_email"};
+		}
 	}
 
 	return {
@@ -821,6 +877,10 @@ sub parseACForDHB {
 		my @cv = split(' ', $c);
 		$archiveCleanupDetails{'freq_days'} = $cv[1];
 		$archiveCleanupDetails{'freq_percent'} = $cv[2];
+	}
+
+	if ($_[0]->{'settings'}{'emails'}{'status'} eq 'notify_always') {
+		$archiveCleanupDetails{'arch_email'} = $_[0]->{'settings'}{'emails'}{'ids'};
 	}
 	return \%archiveCleanupDetails;
 }
@@ -1089,7 +1149,7 @@ return {};
 				'content' => {
 					'channel' => 'save_user_settings',
 					'user_settings' => {
-						'ENGINECOUNT' => (int($_[0]->{'value'}) ? 4 : 2)
+						'ENGINECOUNT' => (int($_[0]->{'value'}) ? $AppConfig::maxEngineCount : $AppConfig::minEngineCount)
 					}
 				}
 			};

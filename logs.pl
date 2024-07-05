@@ -35,16 +35,20 @@ sub init {
 	system(Common::updateLocaleCmd('clear'));
 	Common::loadAppPath();
 	Common::loadServicePath() 			or Common::retreat('invalid_service_directory');
+	Common::verifyVersionConfig();
 	Common::loadUsername()				or Common::retreat('login_&_try_again');
 	my $errorKey = Common::loadUserConfiguration();
 	Common::retreat($AppConfig::errorDetails{$errorKey}) if($errorKey > 1);
 	Common::isLoggedin()            	or Common::retreat('login_&_try_again');
 
 	Common::displayHeader();
+	
+	# Express backup path under online backup is deprecated
+	Common::fixPathDeprecations();
 
 	Common::displayMainMenu(\%mainMenu,'select_operation_to_perform');
 	my $userMenuChoice 	= Common::getUserMenuChoice(scalar keys %mainMenu);
-	($userMenuChoice==1)?viewLog():deleteLogs();
+	($userMenuChoice == 1)? viewLog() : deleteLogs();
 	exit;
 }
 
@@ -52,6 +56,7 @@ sub init {
 # Subroutine			: viewLog
 # Objective				: This subroutine to display the logs based on user's option.
 # Added By				: Senthil pandian
+# Modified By			: Sabin Cheruvattil
 #****************************************************************************************************/
 sub viewLog {
 	# show log menu and get the input from user
@@ -92,7 +97,21 @@ sub viewLog {
 
 		$logFileChoice = getChoiceToViewLog($logFileChoice);
 
-		Common::openEditor('view', qq($logDir/$optionwithLogName{$logFileChoice})) if(-e qq($logDir/$optionwithLogName{$logFileChoice}));
+		# verify running log
+		my $logfile = qq($logDir/$optionwithLogName{$logFileChoice});
+		my $runlog	= '';
+		if(!-f $logfile && $logFileChoice == 1) {
+			my @logbsname	= split(/\_/, basename($logfile));
+			$logbsname[1]	= 'Running';
+			$runlog			= Common::getCatfile(dirname($logfile), join('_', @logbsname));
+
+			# $logfile		= $runlog if(-f $runlog);
+			$runlog			= '' unless(-f $runlog);
+		}
+
+        #Modified for Suruchi_2.3_12_1 : Senthil
+		# Common::openEditor('view', $logfile . (($runlog ne '')? "|$runlog" : '')) if(-f $logfile || ($runlog ne '' && -f $runlog));
+		Common::openEditor('view', $logfile,'',$runlog) if(-f $logfile || ($runlog ne '' && -f $runlog));
 		if($displayLogCount > 1) {
 			Common::display(['do_you_want_to_view_more_logs_yn', "\n"]);
 			$viewLogConf = Common::getAndValidate(['enter_your_choice'], "YN_choice", 1);
@@ -410,6 +429,10 @@ sub displayLogMenu {
 	my ($opIndex, $pathIndex) = (1, 1);
 	my @menuOptions;
 	Common::display(["\n", 'menu_options_title', ':', "\n"]);
+	
+	if (!Common::getUserConfiguration('CDPSUPPORT') or !Common::hasFileNotifyPreReq()) {
+		delete $AppConfig::logMenuAndPaths{'cdp'} if(exists($AppConfig::logMenuAndPaths{'cdp'}));
+	}
 
 	foreach (keys %AppConfig::logMenuAndPaths) {
 		Common::display([$opIndex . ") " . Common::getStringConstant($AppConfig::logMenuAndPaths{$_}) . "\n"], 0);
@@ -428,7 +451,7 @@ sub displayLogMenu {
 # Added By				: Sabin Cheruvattil
 #****************************************************************************************************/
 sub displayDateMenu {
-	Common::display(["\n", 'select_option_to_view_logs_for', ':']);
+	Common::display(["\n", 'select_option_to_view_logs_for', ':', "\n"]);
 	Common::display([map{$_ . ") ", Common::getStringConstant($dateMenuChoices{$_}) . "\n"} keys %dateMenuChoices], 0);
 }
 

@@ -3,8 +3,7 @@
 
 [Unit]
 Description=__APP__ Scheduler
-After=ypbind.service nscd.service network.target
-After=postfix.service sendmail.service exim.service
+After=local-fs.target multi-user.target
 
 [Service]
 ExecStart=__LAUNCHPATH__

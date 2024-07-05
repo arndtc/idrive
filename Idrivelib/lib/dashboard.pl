@@ -12,11 +12,27 @@ use warnings;
 
 $| = 1;
 
-use lib map{if(__FILE__ =~ /\//) { substr(__FILE__, 0, rindex(__FILE__, '/'))."/$_";} else { "./$_"; }} qw(Idrivelib/lib);
+my $l = eval {
+	require Idrivelib;
+	Idrivelib->import();
+	1;
+};
 
-use Idrivelib;
+if(__FILE__ =~ /\//) { use lib substr(__FILE__, 0, rindex(__FILE__, '/')); } else { use lib '.'; }
+
 use Common qw(retreat getUserConfiguration setUserConfiguration saveUserConfiguration getUsername getParentUsername getServicePath getParentRemoteManageIP getRemoteManageIP getRemoteAccessToken getMachineUser getCatfile getUserProfilePath loadNotifications setNotification saveNotifications loadNS getNS saveNS deleteNS getFileContents);
 use AppConfig;
+
+if ($l) {
+	if (defined $ARGV[0] and $ARGV[0] eq '--version') {
+		print($Idrivelib::VERSION, "\n");
+		exit(0);
+	}
+	elsif (defined $ARGV[0] and $ARGV[0] eq '--VERSION') {
+		print($Idrivelib::VERSION, ' ', $Idrivelib::SUBVERSION, '  ', $Idrivelib::RELEASEDDATE, "\n");
+		exit(0);
+	}
+}
 
 $AppConfig::callerEnv = 'BACKGROUND';
 $AppConfig::traceLogFile = 'dashboard.log';
@@ -42,7 +58,7 @@ exit(1) unless (-d $selfPIDFile);
 
 $selfPIDFile = getCatfile($selfPIDFile, 'dashboard.pid');
 exit(1) if Common::isFileLocked($selfPIDFile);
-exit(1) unless Common::fileLock($selfPIDFile);
+exit(1) if Common::fileLock($selfPIDFile);
 
 while (1) {
 	unless (Common::loadServicePath() and Common::loadUsername()) {
@@ -58,18 +74,17 @@ while (1) {
 	}
 
 	if (getUserConfiguration('RMWS') and getUserConfiguration('RMWS') eq 'yes') {
-		$dhbv = 2;
-		eval {
-			Idrivelib::init();
-			1;
-		} or do {
-			sleep(5);
-			next;
-		};
+		if (-f $selfPIDFile) {
+			unlink($selfPIDFile);
+		}
+		my $cmd = Common::getECatfile(Common::getAppPath(), $AppConfig::idrivePythonBinPath, $AppConfig::pythonBinaryName);
+		$cmd .= " start 2>/dev/null";
+		my $res = `$cmd`;
 		last;
 	}
 	else {
 		$dhbv = 1;
+
 		require DashboardClient;
 		DashboardClient->import();
 		eval {
@@ -79,15 +94,11 @@ while (1) {
 			sleep(5);
 			next;
 		};
+
 		last;
 	}
 }
 
 sub end {
-	if ($dhbv == 2) {
-		Idrivelib::end();
-	}
-	else {
-		DashboardClient::end();
-	}
+	DashboardClient::end();
 }

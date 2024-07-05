@@ -13,8 +13,14 @@ use lib map{if(__FILE__ =~ /\//) { substr(__FILE__, 0, rindex(__FILE__, '/'))."/
 use Common;
 use AppConfig;
 use File::Basename;
-use File::Copy qw(copy);
+
+eval {
+	require File::Copy;
+	File::Copy->import();
+};
+
 use Scalar::Util qw(reftype);
+use JSON;
 
 init();
 
@@ -22,18 +28,22 @@ init();
 # Subroutine			: init
 # Objective				: This function is entry point for the script
 # Added By				: Sabin Cheruvattil
-# Modified By			: Yogesh Kumar
+# Modified By			: Yogesh Kumar, Senthil Pandian
 #****************************************************************************************************/
 sub init {
+	my ($packageName, $updateAvailable, $taskParam) =  ('', 0, $ARGV[0]);
+
+	$taskParam = '' unless (defined($taskParam));
+
+	if (($taskParam eq 'silent') or ($taskParam eq 'dispdependency')) {
+		$AppConfig::callerEnv = 'BACKGROUND';
+	}
+
 	Common::loadAppPath();
 	Common::loadServicePath();
 	Common::loadUsername();
 	Common::loadUserConfiguration();
 	checkWritePermission();
-
-	my ($packageName, $updateAvailable, $taskParam) =  ('', 0, $ARGV[0]);
-
-	$taskParam = '' unless (defined($taskParam));
 
 	if ($taskParam eq 'checkUpdate') {
 		$updateAvailable = checkForUpdate();
@@ -43,10 +53,19 @@ sub init {
 
 	Common::findDependencies(0) or Common::retreat('failed');
 
+	if($taskParam eq 'dispdependency' && Common::checkCRONServiceStatus() ne Common::CRON_RUNNING) {
+		my $deps = {'pkg' => [], 'cpanpkg' => [], 'error' => 'cron_not_running'};
+		Common::display(JSON::to_json($deps));
+		exit(0);
+	}
+
 	if ($taskParam eq '') {
 		system(Common::updateLocaleCmd('clear'));
 		Common::displayHeader();
 		checkAndCreateServiceDirectory();
+
+        # Fetching & verifying OS & build version
+        Common::getOSBuild(1);
 
 		my $usrProfileDirPath	= Common::getCatfile(Common::getServicePath(), $AppConfig::userProfilePath);
 		if(-d $usrProfileDirPath) {
@@ -54,7 +73,7 @@ sub init {
 			Common::cleanupUpdate() if (Common::getAndValidate('enter_your_choice', 'YN_choice', 1) eq 'n');
 		}
 
-		Common::askProxyDetails() unless (Common::getUserConfiguration('PROXYIP'));
+		Common::askProxyDetails() unless (Common::getProxyDetails('PROXYIP'));
 		Common::display(["\n",'checking_for_updates', '...']);
 
 		$packageName = qq(/$AppConfig::tmpPath/$AppConfig::appPackageName$AppConfig::appPackageExt);
@@ -72,45 +91,30 @@ sub init {
 			Common::display(['updating_scripts_wait', '...']);
 		}
 	}
-	elsif ($taskParam eq 'silent') {
+	elsif (($taskParam eq 'silent') or ($taskParam eq 'dispdependency')) {
 		$AppConfig::callerEnv = 'BACKGROUND';
 		checkAndCreateServiceDirectory();
 		$packageName = qq(/$AppConfig::tmpPath/$AppConfig::appPackageName$AppConfig::appPackageExt);
 		Common::cleanupUpdate('INIT');
 	}
-	elsif ($taskParam =~ /.zip$/i) {
-		system(Common::updateLocaleCmd('clear'));
-		Common::displayHeader();
-		checkAndCreateServiceDirectory();
-		$packageName = $taskParam;
-		Common::cleanupUpdate('INIT');
-		Common::cleanupUpdate(['file_not_found', ": $packageName"]) unless (-e $packageName);
-
-		my $usrProfileDirPath	= Common::getCatfile(Common::getServicePath(), $AppConfig::userProfilePath);
-		if(-d $usrProfileDirPath) {
-			Common::display(['updating_script_will_logout_users','do_you_want_to_continue_yn']);
-			Common::cleanupUpdate() if (Common::getAndValidate('enter_your_choice', 'YN_choice', 1) eq 'n');
-		}
-
-		$packageName = qq(/$AppConfig::tmpPath/$AppConfig::appPackageName$AppConfig::appPackageExt);
-		copy $taskParam, $packageName;
-	}
 	else{
 		Common::retreat(['invalid_parameter', ': ', $taskParam, '. ', 'please_try_again', '.']);
 	}
 
-	if ($taskParam !~ /.zip$/i) {
-		# Download the package to update the scripts
-		Common::cleanupUpdate(['update_failed_to_download']) unless (Common::download($AppConfig::appDownloadURL, qq(/$AppConfig::tmpPath)));
-		Common::cleanupUpdate(['update_failed_to_download']) unless (-e qq($packageName));
-	}
-
-	createUpdatePid();
-	deleteVersionInfoFile();
+	# Download the package to update the scripts
+	Common::cleanupUpdate(['update_failed_to_download']) unless (Common::download($AppConfig::appDownloadURL, qq(/$AppConfig::tmpPath)));
+	Common::cleanupUpdate(['update_failed_to_download']) unless (-e qq($packageName));
 
 	my $packagedir	= extractPackage($packageName);
 
+	displayPackageDep($packagedir) if($taskParam eq 'dispdependency');
+
+	createUpdatePid('preupdate');
 	preUpdate($taskParam, $packagedir);
+
+	createUpdatePid('update');
+	deleteVersionInfoFile();
+
 	installUpdates($packagedir);
 
 	Common::display(['scripts_updated_successfully']) unless ($taskParam eq 'silent');
@@ -170,6 +174,22 @@ sub extractPackage {
 }
 
 #*************************************************************************************************
+# Subroutine		: displayPackageDep
+# Objective			: Display future package dependencies.
+# Added By			: Sabin Cheruvattil
+#*************************************************************************************************
+sub displayPackageDep {
+	my $perlBin = $AppConfig::perlBin;
+	my $cmd = $perlBin . ' ' . Common::getECatfile($_[0], $AppConfig::idriveScripts{'utility'}) . ' DISPLAYPACKAGEDEP 2>/dev/null';
+	my $res = `$cmd`;
+
+	$AppConfig::callerEnv = '';
+	Common::display($res, 0);
+
+	exit(0);
+}
+
+#*************************************************************************************************
 # Subroutine		: installUpdates
 # Objective			: install downloaded update package
 # Added By			: Sabin Cheruvattil
@@ -223,6 +243,7 @@ sub installUpdates {
 
 	my @scriptNames;
 	@scriptNames = (@scriptNames, map{$AppConfig::idriveScripts{$_}} keys %AppConfig::idriveScripts);
+	push(@scriptNames, 'Idrivelib');
 
 	# Take a backup
 	my $moveRes = moveScripts(Common::getAppPath(), $scriptBackupDir, \@scriptNames);
@@ -280,6 +301,7 @@ sub moveUpdatedScripts {
 # Subroutine		: moveScripts
 # Objective			: Helps tp move files between 2 directories
 # Added By			: Sabin Cheruvattil
+# Modified By		: Senthil Pandian, Yogesh Kumar
 #*************************************************************************************************/
 sub moveScripts {
 	my ($src, $dest, $scripts) = ($_[0], $_[1], $_[2]);
@@ -298,13 +320,17 @@ sub moveScripts {
 			my $moveResultCmd = Common::updateLocaleCmd("cp -rf '$fileToTransfer' '$dest'");
 			$moveResult = `$moveResultCmd`;
 			print UPDATELOG qq(\n).Common::getStringConstant('move_file').qq(:: $fileToTransfer >> $dest :: $moveResult\n);
+			if (-d $fileToTransfer and $moveResult eq '') {
+				Common::removeItems([$fileToTransfer]);
+			}
 		}
 
 		last if ($moveResult ne '');
 	}
 
-	Common::traceLog($moveResult);
+	Common::traceLog($moveResult) if($moveResult);
 	close UPDATELOG;
+
 	return ($moveResult ne '')? 0 : 1;
 }
 
@@ -315,16 +341,13 @@ sub moveScripts {
 # Modified By		: Yogesh Kumar
 #*************************************************************************************************/
 sub checkForUpdate {
-	my %params = (
-		'host'		=> $AppConfig::checkUpdateBaseCGI,
-		'method'	=> 'GET',
-		'json'		=> 0
-	);
-
-	#my $cgiResult = Common::request(\%params);
-	my $cgiResult = Common::requestViaUtility(\%params);
+	my $cgiResult = Common::makeRequest(4, [
+		($AppConfig::appType . "ForLinux"),
+		$AppConfig::trimmedVersion
+	]);
 
 	return 0 unless (ref($cgiResult) eq 'HASH');
+	chomp($cgiResult->{AppConfig::DATA});
 	return 1 if ($cgiResult->{AppConfig::DATA} eq 'Y');
 	return 0 if ($cgiResult->{AppConfig::DATA} eq 'N');
 
@@ -342,7 +365,7 @@ sub checkForUpdate {
 # Added By			: Sabin Cheruvattil
 #*************************************************************************************************/
 sub updateVersionInfoFile {
-	my $versionInfoFile = Common::getAppPath() . '/' . $AppConfig::updateVersionInfo;
+	my $versionInfoFile = Common::getUpdateVersionInfoFile();
 	open (VN,'>', $versionInfoFile);
 	print VN $AppConfig::version;
 	close VN;
@@ -355,7 +378,7 @@ sub updateVersionInfoFile {
 # Added By			: Sabin Cheruvattil
 #*************************************************************************************************/
 sub deleteVersionInfoFile {
-	my $versionInfoFile = Common::getAppPath() . '/' . $AppConfig::updateVersionInfo;
+	my $versionInfoFile = Common::getUpdateVersionInfoFile();
 	Common::removeItems($versionInfoFile);
 }
 
@@ -367,11 +390,10 @@ sub deleteVersionInfoFile {
 #*************************************************************************************************
 sub preUpdate {
 	my $perlBin = $AppConfig::perlBin;
-	$perlBin = Common::getIDrivePerlBin() if (Common::hasStaticPerlBinary());
-	my $cmd = ($perlBin . ' ' . Common::getScript('utility', 1) . ' PREUPDATE ' . "'" . $AppConfig::version . "' " . qq('$_[0]') . " " . qq('$_[1]') . " 2>/dev/null");
-
+	my $cmd = ($perlBin . ' ' . Common::getECatfile($_[1], $AppConfig::idriveScripts{'utility'}) . ' PREUPDATE ' . "'" . $AppConfig::version . "' " . qq('$_[0]') . " '" . Common::getServicePath() . "' '" . Common::getUsername() . "'" . " 2>/dev/null");
 	my $res = system($cmd);
-	Common::retreat(['failed_to_run_script', Common::getScript('utility', 1), ". Reason:" . $?]) if ($res);
+
+	Common::retreat(['failed_to_complete_preupdate', "."], 0) if ($res);
 }
 
 #*************************************************************************************************
@@ -382,19 +404,17 @@ sub preUpdate {
 #*************************************************************************************************/
 sub postUpdate {
 	my $perlBin = $AppConfig::perlBin;
-	my $cmd = ($perlBin . ' ' .Common::getScript('utility', 1) . ' POSTUPDATE '." '".$AppConfig::version."' ".qq('$_[0]')." 2>/dev/null");
+	my $cmd = ($perlBin . ' ' .Common::getScript('utility', 1) . ' POSTUPDATE ' . " '" . $AppConfig::version . "' " . qq('$_[0]') . " 2>/dev/null");
 
 	my $res = system($cmd);
-	if ($res) {
-		Common::traceLog('failed_to_run_script',Common::getScript('utility', 1),". Reason:".$?);
-	}
+	Common::traceLog('Failed to complete post update') if ($res);
 }
 
 #*************************************************************************************************
 # Subroutine		: checkAndCreateServiceDirectory
 # Objective			: check and create service directory if not present
 # Added By			: Senthil Pandian
-# Modified By		: Yogesh Kumar
+# Modified By		: Yogesh Kumar, Sabin Cheruvattil
 #*************************************************************************************************/
 sub checkAndCreateServiceDirectory {
 	unless (Common::loadServicePath()) {
@@ -402,6 +422,7 @@ sub checkAndCreateServiceDirectory {
 			Common::createServiceDirectory();
 		}
 	}
+
 	Common::createDir(Common::getCachedDir(),1) unless(-d Common::getCachedDir());
 }
 
@@ -409,14 +430,21 @@ sub checkAndCreateServiceDirectory {
 # Subroutine		: createUpdatePid
 # Objective			: check and create update pid if not exists
 # Added By			: Senthil Pandian
+# Modified By		: Sabin Cheruvattil
 #*************************************************************************************************/
 sub createUpdatePid {
-	my $updatePid = Common::getCatfile(Common::getCachedDir(), $AppConfig::updatePid);
+	my $updatePid = '';
+	if($_[0] and $_[0] eq 'preupdate') {
+		$updatePid = Common::getCatfile(Common::getCachedDir(), $AppConfig::preupdpid);
+	} else {
+		$updatePid = Common::getCatfile(Common::getCachedDir(), $AppConfig::updatePid);
+	}
+
 	# Check if another job is already in progress
 	if (Common::isFileLocked($updatePid)) {
 		Common::retreat('updating_scripts_wait');
 	}
-	elsif (!Common::fileLock($updatePid)) {
+	elsif (Common::fileLock($updatePid)) {
 		Common::retreat($!);
 	}
 }
@@ -425,18 +453,20 @@ sub createUpdatePid {
 # Subroutine		: checkWritePermission
 # Objective			: check write permission of scripts
 # Added By			: Senthil Pandian
+# Modified By		: Yogesh Kumar, Sabin Cheruvattil
 #*************************************************************************************************/
 sub checkWritePermission {
 	my $scriptDir = Common::getAppPath();
 	my $noPerm = 0;
-	if(!-w $scriptDir){
-		Common::retreat(['system_user', " '$AppConfig::mcUser' ", 'does_not_have_sufficient_permissions',' ','please_run_this_script_in_privileged_user_mode','update.']);
+	if (!-w $scriptDir){
+		Common::retreat(['system_user', " '$AppConfig::mcUser' ", 'does_not_have_sufficient_permissions', ' ', 'please_run_this_script_in_privileged_user_mode','update.']);
 	}
+
 	opendir(my $dh, $scriptDir);
 	foreach my $script (readdir($dh)) {
 		next if ($script eq '.' or $script eq '..');
 		next if (-f $script and $script !~ /.pl|.pm/ and $script ne 'readme.txt');
-		if(!-w $script){
+		if (!-w Common::getCatfile($scriptDir, $script)) {
 			Common::retreat(['system_user', " '$AppConfig::mcUser' ", 'does_not_have_sufficient_permissions',' ','please_run_this_script_in_privileged_user_mode','update.']);
 		}
 	}

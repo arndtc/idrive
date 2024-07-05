@@ -4,7 +4,7 @@
 
 [Unit]
 Description=__APP__ Scheduler
-After=auditd.service systemd-user-sessions.service time-sync.target
+After=local-fs.target multi-user.target
 
 [Service]
 ExecStart=__LAUNCHPATH__

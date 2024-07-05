@@ -20,6 +20,8 @@ init();
 
 #*****************************************************************************************************
 # Subroutine			: init
+# In Param              : $ARGV[0]=>jobName, $ARGV[1]=>'IDrive user', $ARGV[2]=>JobType(all/manual/scheduled),
+#						  $ARGV[3]=>force to kill all, $ARGV[4]=>'Linux user', $ARGV[5]=>'Error message/Reason for termination'
 # Objective				: This function is entry point for the script
 # Added By				: Yogesh Kumar
 # Modified By			: Sabin Cheruvattil, Senthil Pandian
@@ -27,6 +29,8 @@ init();
 sub init {
 	Common::loadAppPath();
 	Common::loadServicePath() or Common::retreat('invalid_service_directory');
+	Common::verifyVersionConfig();
+
 	$AppConfig::callerEnv = 'BACKGROUND' unless ($cmdNumOfArgs == -1);
 	my $killall = (defined($ARGV[3]) && $ARGV[3] eq 'allType')? 1 : 0;
 
@@ -39,7 +43,8 @@ sub init {
 
 	$AppConfig::mcUser = $ARGV[4] if(defined($ARGV[4])); #Added to terminate all profile's jobs 
 	my $errorKey = Common::loadUserConfiguration();
-	Common::retreat($AppConfig::errorDetails{$errorKey}) if($AppConfig::callerEnv ne 'BACKGROUND' and $errorKey == 104);
+	# Common::retreat($AppConfig::errorDetails{$errorKey}) if($AppConfig::callerEnv ne 'BACKGROUND' and $errorKey == 104);
+    Common::retreat($AppConfig::errorDetails{$errorKey}) if($AppConfig::callerEnv ne 'BACKGROUND' and defined($AppConfig::errorDetails{$errorKey}));
 	Common::loadEVSBinary()  or Common::retreat('unable_to_find_or_execute_evs_binary');
 	Common::isLoggedin()     or Common::retreat('login_&_try_again') if($AppConfig::callerEnv ne 'BACKGROUND');
 	Common::displayHeader() unless($cmdNumOfArgs == 1);
@@ -68,7 +73,7 @@ sub init {
 			Common::display('you_can_stop_one_job_at_a_time')
 		}
 
-		Common::displayMenu('select_the_job_from_the_above_list',@options);
+		Common::displayMenu('select_the_job_from_the_above_list', @options);
 		Common::display('');
 		$userSelection = Common::getUserMenuChoice(scalar(@options));
 	}
@@ -88,7 +93,7 @@ REPEAT:
 				close $fh;
 			}
 			else {
-				Common::retreat(['unable_to_create_file', " \"$cancelFile\"." ]);
+				Common::retreat(['unable_to_create_file', " \"$cancelFile\". Reason: $!." ]);
 			}
 		}
 		elsif (defined($ARGV[5])) {
@@ -96,6 +101,13 @@ REPEAT:
 				Common::retreat(['unable_to_create_file', " \"$cancelFile\"." ]);
 			}
 			Common::traceLog(Common::getStringConstant($ARGV[5]));
+		}
+
+		# Keep this file as a flag for checking scheduled backup was terminated by user or not
+		if($cmdNumOfArgs == -1) {
+			my $schcfile = $jobs{$options[($userSelection - 1)]};
+			$schcfile =~ s/pid.txt$/$AppConfig::schtermf/g;
+			Common::fileWrite($schcfile, '1');
 		}
 
 		if ($pid ne "" && !killPid($pid)) {
@@ -170,30 +182,32 @@ sub getPid {
 # Subroutine			: killPid
 # Objective				: Terminate a process
 # Added By				: Yogesh Kumar
+# Modified By			: Sabin Cheruvattil
 #****************************************************************************************************/
 sub killPid {
 	my $pid = shift;
 	$pid    =~ s/^\s+|\s+$//g;
 	return 0 if (!$pid);
 
-	my $errorFile = Common::getECatfile(Common::getServicePath(), 'kill.err');
-	my $status = system(Common::updateLocaleCmd("kill $pid 2>$errorFile"));
+	my $errorfile	= Common::getCatfile(Common::getServicePath(), 'kill.err');
+	my $errescfile	= Common::getECatfile(Common::getServicePath(), 'kill.err');
+	my $status = system("kill $pid 2>$errescfile");
 	my $errorStr;
 
-	if ($? > 0 and -e $errorFile) {
-		if (open(my $p, '<', $errorFile)) {
+	if ($? > 0 and -f $errorfile) {
+		if (open(my $p, '<', $errorfile)) {
 			$errorStr = <$p>;
 			close($p);
-			unlink($errorFile);
+			unlink($errorfile);
 		}
 		else {
-
 			if($AppConfig::callerEnv eq 'BACKGROUND'){
-				Common::traceLog(['failed_to_open_file', ": $errorFile"]);
+				Common::traceLog(['failed_to_open_file', ": $errorfile"]);
 			} else {
-				Common::display(['failed_to_open_file', ': ', $errorFile]);
+				Common::display(['failed_to_open_file', ': ', $errorfile]);
 			}
 		}
+
 		if ($errorStr =~ 'Operation not permitted') {
 			if($AppConfig::callerEnv eq 'BACKGROUND'){
 				Common::traceLog('unable_to_kill_job');
@@ -208,10 +222,11 @@ sub killPid {
 				Common::display('this_job_might_be_stopped_already');
 			}
 		}
+
 		return 0;
 	}
-	unlink($errorFile);
 
+	unlink($errorfile);
 	return 1;
 }
 

@@ -140,7 +140,7 @@ my %prop = (
 			foreach my $filename (keys %backupSetInfo) {
 				next if (exists $_[2]->{$filename} and not exists $_[1]->{$filename});
 				unless (exists $_[1]->{$filename} and ($_[1]->{$filename}{'type'} eq $backupSetInfo{$filename}{'type'}) and $_[1]->{$filename}{'disabled'}) {
-					$backupSet{$filename}{'type'} = $backupSetInfo{$filename}{'type'};
+					$backupSetInfo{$filename}{'type'} = $backupSetInfo{$filename}{'type'};
 				}
 
 				delete $_[1]->{$filename} if (exists $_[1]->{$filename});
@@ -154,7 +154,7 @@ my %prop = (
 		my @newItemArray = keys %backupSet;
 		@newItemArray = Common::verifyEditedFileContent(\@newItemArray);
 		if(scalar(@newItemArray) > 0) {
-			%backupSet = Common::getLocalDataWithType(\@newItemArray, 'backup');
+			%backupSet = Common::getLocalDataWithType(\@newItemArray, 'backup', 1);
 			%backupSet = Common::skipChildIfParentDirExists(\%backupSet);
 		} else {
 			%backupSet= ();
@@ -178,7 +178,7 @@ sub parseSch {
 		$jobName = 'default_backupset';
 	}
 	elsif ($_[0]->{'bksetname'} eq 'LocalBackupSet') {
-		$jobType = 'express_backup';
+		$jobType = 'local_backup';
 		$jobName = 'local_backupset';
 	}
 
@@ -211,36 +211,25 @@ sub parseSch {
 sub parseFilenames {
 	my %fileInfo = ();
 	my $filename = '';
+
 	foreach (split(/\n/, $_[0]->{$_[1]})) {
 		if ($_ =~ /\\0$/) {
 			$filename = $_[2]? Common::urlDecode(substr($_, 0, -2)) : parseQuote(substr($_, 0, -2));
-			if (utf8::is_utf8($filename)) {
-				utf8::downgrade($filename);
-			}
 			$fileInfo{$filename}{'type'} = 'd';
 			$fileInfo{$filename}{'disabled'} = 1;
 		}
 		elsif ($_ =~ /0$/) {
 			$filename = $_[2]? Common::urlDecode(substr($_, 0, -1)) : parseQuote(substr($_, 0, -1));
-			if (utf8::is_utf8($filename)) {
-				utf8::downgrade($filename);
-			}
 			$fileInfo{$filename}{'type'} = 'f';
 			$fileInfo{$filename}{'disabled'} = 1;
 		}
 		elsif ($_ =~ /\\1$/) {
 			$filename = $_[2]? Common::urlDecode(substr($_, 0, -2)) : parseQuote(substr($_, 0, -2));
-			if (utf8::is_utf8($filename)) {
-				utf8::downgrade($filename);
-			}
 			$fileInfo{$filename}{'type'} = 'd';
 			$fileInfo{$filename}{'disabled'} = 0;
 		}
 		elsif ($_ =~ /1$/) {
 			$filename = $_[2]? Common::urlDecode(substr($_, 0, -1)) : parseQuote(substr($_, 0, -1));
-			if (utf8::is_utf8($filename)) {
-				utf8::downgrade($filename);
-			}
 			$fileInfo{$filename}{'type'} = 'f';
 			$fileInfo{$filename}{'disabled'} = 0;
 		}
@@ -260,7 +249,7 @@ sub parseQuote {
 
 	$_[0] =~ s/&apos;/'/;
 	$_[0] =~ s/&quot;/"/;
-	return Common::urlDecode($_[0]);
+	return $_[0];
 }
 
 #*****************************************************************************************************
@@ -338,13 +327,35 @@ sub parseArchiveCleanup {
 	$archiveSettings{'settings'}{'status'} = ($_[0]->{'value'} ? 'enabled':'disabled') if ($_[0]->{'key'} eq 'arch_cleanup_checked');
 
 	if ($_[0]->{'key'} eq 'freq_days') {
-		$AppConfig::tempVar = int($_[0]->{'value'});
-		return {};
+		if (defined($AppConfig::tempVar2)) {
+			$archiveSettings{'cmd'} = "$_[0]->{'value'} $AppConfig::tempVar2 0";
+			$AppConfig::tempVar2 = undef;
+		}
+		else {
+			$AppConfig::tempVar2 = int($_[0]->{'value'});
+			return {};
+		}
 	}
 
 	if ($_[0]->{'key'} eq 'freq_percent') {
-		$archiveSettings{'cmd'} = "$AppConfig::tempVar $_[0]->{'value'}";
-		$AppConfig::tempVar = undef;
+		if (defined($AppConfig::tempVar2)) {
+			$archiveSettings{'cmd'} = "$AppConfig::tempVar2 $_[0]->{'value'} 0";
+			$AppConfig::tempVar = undef;
+		}
+		else {
+			$AppConfig::tempVar2 = int($_[0]->{'value'});
+			return {};
+		}
+	}
+
+	if ($_[0]->{'key'} eq 'arch_email') {
+		if ($_[0]->{'value'} eq '') {
+			$archiveSettings{'settings'}{'emails'}{'status'} = 'disabled';
+		}
+		else {
+			$archiveSettings{'settings'}{'emails'}{'status'} = 'notify_always';
+			$archiveSettings{'settings'}{'emails'}{'ids'} = $_[0]->{'value'};
+		}
 	}
 
 	return {
@@ -554,7 +565,7 @@ sub parse {
 				'content' => {
 					'channel' => 'save_user_settings',
 					'user_settings' => {
-						'ENGINECOUNT' => (int($_[0]->{'value'}) ? 4 : 2)
+						'ENGINECOUNT' => (int($_[0]->{'value'}) ? $AppConfig::maxEngineCount : $AppConfig::minEngineCount)
 					}
 				}
 			};
@@ -593,6 +604,55 @@ sub parse {
 					'channel' => 'save_user_settings',
 					'user_settings' => {
 						'NMB' => int($_[0]->{'value'})
+					}
+				}
+			};
+		}
+		elsif ($_[0]->{'key'} eq 'chk_cdp') {
+			$AppConfig::chk_cdp = int($_[0]->{'value'});
+			if ($AppConfig::cmb_cdp) {
+				unless ($AppConfig::chk_cdp) {
+					$AppConfig::cmb_cdp = 0;
+				}
+				return {
+					'content' => {
+						'channel' => 'save_user_settings',
+						'user_settings' => {
+							'CDP' => int($AppConfig::cmb_cdp)
+						}
+					}
+				};
+				$AppConfig::chk_cdp = undef;
+				$AppConfig::cmb_cdp = undef;
+			}
+			return {};
+		}
+		elsif ($_[0]->{'key'} eq 'cmb_cdp') {
+			unless(defined($AppConfig::chk_cdp)) {
+				$AppConfig::cmb_cdp = (split(" ", $_[0]->{'value'}))[0];
+				return {};
+			}
+			my $cmb = int((split(" ", $_[0]->{'value'}))[0]);
+			unless ($AppConfig::chk_cdp) {
+				$cmb = 0;
+			}
+			$AppConfig::chk_cdp = undef;
+			$AppConfig::cmb_cdp = undef;
+			return {
+				'content' => {
+					'channel' => 'save_user_settings',
+					'user_settings' => {
+						'CDP' => $cmb
+					}
+				}
+			};
+		}
+		elsif ($_[0]->{'key'} eq 'verify_bkset') {
+			return {
+				'content' => {
+					'channel' => 'save_user_settings',
+					'user_settings' => {
+						'RESCANINTVL' => $_[0]->{'value'}
 					}
 				}
 			};

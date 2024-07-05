@@ -17,15 +17,23 @@ our @EXPORT_OK = qw(TRUE FALSE STATUS SUCCESS FAILURE);
 
 use IxHash;
 
-our $version         	= '2.26';
-our $releasedate     	= '04-15-2020';
-our $appType         	= 'IDrive';
+our $version          = '2.31';
+my $buildVersion      = '';
+$version             .= "$buildVersion" if ($buildVersion ne '');
+our $releasedate      = '10-18-2021';
+our $appType          = 'IDrive';
 our $servicePathName    = lc($appType).'It';
 our $oldServicePathName = lc($appType);
 
-our $language			= 'EN';       # EN-ENGLISH
-our $staticPerlVersion	= '1.4';
-our $appCron			= lc($appType).'cron';
+our $language = 'EN';       # EN-ENGLISH
+
+our $staticPerlVersion    = '2.31';
+our $staticPerlBinaryName = 'perl';
+
+our $pythonVersion        = '2.31';
+our $pythonBinaryName     = 'dashboard';
+
+our $appCron = lc($appType).'cron';
 
 use constant {
 	SUCCESS  => 'SUCCESS',
@@ -38,14 +46,22 @@ use constant {
 	ONEWEEK  => 7,
 	TWOWEEK  => 14,
 	ONEMONTH => 30,
+	TRY_UPDATE => 1,
+	TRY_INSERT => 1,
+	MULTIPLE_BACKUP_SET => 1,
+
 };
 
 our $debug = 0;
 
 our $displayHeader = 1;
 
-our $hostname = `hostname`;
+our $hostname = `uname -n`;
 chomp($hostname);
+unless ($hostname) {
+	$hostname = `hostname`;
+	chomp($hostname);
+}
 our $mcUser = `whoami`;
 chomp($mcUser);
 our $rootAuth = '';
@@ -66,13 +82,25 @@ else {
 
 our $callerEnv = 'INTERACTIVE';
 
+our $errorMsg           = '';
+our $utf8File           = 'utf8.cmd';
+our $idriveLibPath      = 'Idrivelib/lib';
+# TODO: remove our $idrivePythonPath   = 'Idrivelib/python';
+our $idriveDepPath      = 'Idrivelib/dependencies';
+our $idrivePythonBinPath= "$idriveDepPath/python";
+our $idrivePerlBinPath  = "$idriveDepPath/perl";
+our $cronSetupPath      = 'Idrivelib/cronsetup';
+our $cpanSetupPath      = 'Idrivelib/cpansetup';
+our $inotifySourcePath	= 'Idrivelib/inotify2src';
+our $inotifyBuiltPath	= 'Idrivelib/inotify2';
+our $defaultMountPath   = '/tmp';
+
 our $evsBinaryName        = 'idevsutil';
 our $evsDedupBinaryName   = 'idevsutil_dedup';
-our $staticPerlBinaryName = 'perl';
 our $rRetryTimes          = 2;                   # Request retry for 2 more times(total 3).
 our $perlBin              = `which perl`;
 chomp($perlBin);
-if (exists $ENV{'_'} and $ENV{'_'} and not ($ENV{'_'} =~ m/$servicePathName\/$staticPerlBinaryName/)) {
+if (exists $ENV{'_'} and $ENV{'_'} and not ($ENV{'_'} =~ m/$idriveDepPath/)) {
 	$perlBin = $ENV{'_'};
 }
 
@@ -82,19 +110,11 @@ if ($perlBin =~ /\.pl$/) {
 	$perlBin = '/usr/bin/perl' unless($perlBin);
 }
 
-our $errorMsg           = '';
-our $utf8File           = 'utf8.cmd';
-our $idriveLibPath      = 'Idrivelib/lib';
-our $idriveDepPath      = 'Idrivelib/dependencies';
-our $cronSetupPath      = 'Idrivelib/cronsetup';
-our $defaultMountPath   = '/tmp';
-
 chomp(our $machineOS = `uname -msr`);
 our $freebsdProgress = '';
 our $deviceType      = 'LINUX';
 our $evsVersion      = 'evs005';
 our $NSPort          = 443;
-our $idriveLoginCGI  = 'https://tomcat.idrive.com/idrive/viewjsp/RemoteLogin.jsp';
 
 our $deviceUIDPrefix = 'Linux';
 our $deviceIDPrefix  = '5c0b';
@@ -105,10 +125,15 @@ our @dependencyBinaries = ('unzip', 'curl');
 our $serviceLocationFile = '.serviceLocation';
 our $updateVersionInfo   = '.updateVersionInfo';
 our $forceUpdateFile     = '.forceupdate';
+our $autoinstall		= '--auto-setup';
+our $isautoinstall		= 0;
+our $autoconfspc		= 60;
 
-our $versioncache			= 'cache/version';
+our $versioncache          = 'cache/version';
 our $cachedFile            = 'cache/user.txt';
 our $cachedIdriveFile      = 'cache/'.lc($appType).'user.txt';
+our $osVersionCache        = 'cache/os_detail.txt';
+our $proxyInfoFile         = '__SERVICEPATH__/cache/proxy.info';
 our $userProfilePath       = 'user_profile';
 our $userInfoPath          = '.userInfo';
 our $idpwdFile             = "$userInfoPath/IDPWD";
@@ -132,10 +157,12 @@ our $utilityRequestFile    = 'utilityRequestFile.json';
 our $maxLogSize            = 2 * 1024 * 1024;
 our $maxChoiceRetry        = 3;
 our $reportMaxMsgLength    = 4095;
-our $bufferLimit           = 2 * 1024;
+our $bufferLimit           = 10 * 1024;
+our $quotatimeout          = 36000;
 
-our $minEngineCount = 2;
-our $maxEngineCount = 4;
+our $minEngineCount     = 2;
+our $maxEngineCount     = 4;
+our $restoreEngineCount	= 4;
 
 our $fullExcludeListFile    = 'FullExcludeList.txt';
 our $partialExcludeListFile = 'PartialExcludeList.txt';
@@ -149,41 +176,68 @@ our $versionRestoreFile = 'versionRestoresetFile.txt';
 our $unzipLog     = 'unzipLog.txt';
 our $updateLog    = '.updateLog.txt';
 our $updatePid    = 'update.pid';
+our $preupdpid	  = 'preupdate.pid';
 our $freshInstall = 'freshInstall';
 
-our $isUserConfigModified = 0;
-our $backupsetFile        = 'BackupsetFile.txt';
-our $tempBackupsetFile    = 'tempBackupsetFile.txt';
+our $isUserConfigModified	= 0;
+our $backupsetFile			= 'BackupsetFile.enc';
+our $transBackupsetFile		= 'BackupsetFile.trans';
+our $oldBackupsetFile		= 'BackupsetFile.txt';
+our $backupextn				= '.bkp';
+our $tempBackupsetFile		= 'tempBackupsetFile.txt';
+our $backupsetMaxSize		= 5000000000;
+our $backupsethist			= 'HIST/track_%m_%Y.log';
+our $maxbackuphist			= 12;
 
 our $restoresetFile        = 'RestoresetFile.txt';
+our $tempRestoresetFile    = 'tempRestoresetFile.txt';
 
+our $restoresetFileRelative   = 'RestoreFileName_Rel.txt';
+our $restoresetFileNoRelative = 'RestoreFileName_NoRel.txt';
+our $restoresetFileOnlyFiles  = 'RestoreFileName_filesOnly';
+our %fileInfoDB;
+
+our $archiveFileResultSet    = 'archiveFileResultSet';
+our $archiveDirResultSet     = 'archiveDirResultSet';
 our $archiveFileListForView  = 'archiveFileListForView.txt';
 our $archiveFileResultFile   = 'archiveFileResult.txt';
 our $archiveFolderResultFile = 'archiveFolderResult.txt';
+our $archiveSettingsFile     = 'archive_settings.json';
+our $archiveStageDetailsFile = 'archiveStageDetails.txt';
+our $archiveFileFailureReasonFile = 'archiveFileFailureReason.txt';
 
 our $alertStatusFile = 'alert.status';
 
+our $bwFile          = 'bw.txt';
 our $cancelFile      = 'exitError.txt';
 our $exitErrorFile   = 'exitError.txt';
+our $schtermf		 = 'schedule.term';
 our $errorFile       = 'error.txt';
 our $evsTempDir      = 'evs_temp';
 our $statusFile      = 'STATUS_FILE';
 our $infoFile        = 'info_file';
 our $fileForSize     = 'TotalSizeFile';
-our $excludeDir      = 'Excluded';
+# our $excludeDir      = 'Excluded';
 our $errorDir        = 'ERROR';
 our $pidFile         = 'pid.txt';
+our $progressPidFile = 'progressPidFile.txt';
 our $logPidFile      = 'LOGPID';
-our $excludedLogFile = 'excludedItemsLog.txt';
+# our $excludedLogFile = 'excludedItemsLog.txt';
 our $mountPointFile  = 'mountPoint.txt';
 our $trfSizeAndCountFile = 'trfSizeAndCount.txt';
 our $progressDetailsFilePath = 'PROGRESS_DETAILS';
 our $retryInfo = "RetryInfo.txt";
 our $failedFileName = "failedFiles.txt";
+our $failedFileWithReason = "failedFileWithReason.txt";
+our $failedDirList = "failedDirList.txt";
+our $finalErrorFile = "finalError.txt";
+our $deletedFileList = "deletedFileList.txt";
+our $deletedDirList = "deletedDirList.txt";
 our $relativeFileset = "BackupsetFile_Rel";
 our $filesOnly = "BackupsetFile_filesOnly";
 our $noRelativeFileset = "BackupsetFile_NoRel";
 our $transferredFileSize = 'transferredFileSize.txt';
+our $totalFileCountFile = 'totalFileCountFile';
 our $operationsfile  = 'operationsfile.txt';
 our $fileSummaryFile = 'fileSummary.txt';
 our $permissionErrorFile = 'permissionError.txt',
@@ -198,15 +252,19 @@ our $expressDbDir = 'ExpressDB';
 our ($jobRunningDir,$outputFilePath,$errorFilePath,$mailContentHead) = ('') x 4;
 our ($mailContent, $jobType, $expressLocalDir, $errStr, $finalSummary) = ('') x 5;
 our ($fullStr,$parStr,$regexStr) = ('') x 3;
-our ($excludedCount,$noRelIndex,$excludedFileIndex,$filesonlycount,$retryCount,$cancelFlag) = (0) x 6;
-our ($totalFiles,$fileCount,$nonExistsCount,$noPermissionCount,$missingCount) = (0) x 5;
-our ($localMountPath,$encType,$hashVal) = ('') x 3;
+our ($noRelIndex, $filesonlycount, $retryCount, $cancelFlag) = (0) x 4;
+# our ($excludedCount,$noRelIndex,$excludedFileIndex,$filesonlycount,$retryCount,$cancelFlag) = (0) x 6;
+our ($totalFiles, $totalSize, $fileCount, $nonExistsCount, $noPermissionCount, $missingCount, $readySyncedFiles, $excludedCount) = (0) x 8;
+our ($localMountPath,$encType,$pvtKeyHash) = ('') x 3;
 our $progressSizeOp = 1;
-
+our $allowExtentedView = 1;
+our $prevProgressStrLen = 10000;
 our @linesStatusFile = undef;
+# our ($cumulativeCount, $cumulativeTransRate) = (0)x2;
 
 our $filePermission    = 0777;
 our $execPermission    = 0755;
+our $execPermissionStr = "0755";
 our $filePermissionStr = "0777";
 our $prevTime = time();
 
@@ -222,6 +280,7 @@ our $crontabFile    = lc($appType).'crontab.json';
 our $cronlockFile   = '/var/run/'.lc($appType).'cron.lock';
 our $cronservicepid = '/var/run/'.lc($appType).'cron.pid';
 our $cronLinkPath   = '/etc/'.lc($appType).'cron.pl';
+our $cronSetup = 'setup';
 
 our $migUserlock  = 'migrate.lock';
 our $migUserSuccess = 'migrateSuccess';
@@ -233,31 +292,104 @@ our $sfmaxcachets   = 7200; # 2 hrs | time in seconds | size json file
 our $sizepollintvl  = 5; #120;
 our $tempVar        = '';
 our $expressDBMapFile = 'DB.map';
-our $ldbNew			  = 'LDBNEW';
+our $ldbNew           = 'LDBNEW';
+our $xpressdir        = 'IDriveLocal';
+our $pressedKeyValue  = '';
 
 # dashboard lock
 our $dashboardpid = 'dashboard.pid';
 our $dashbtask    = 'dashboard';
 
+our $localHost		= 'localhost';
+our $localPort		= 0;
+our $localPortBase	= 22500;
+our $localPortRange	= 4000;
+our $protocol		= 'tcp';
+our $listen			= 1;
+our $reuse			= 1;
+our $cdp			= 'cdp';
+our	$cdpfn			= 'Continuous Data Protection';
+our $cdpwatcher		= 'cdpwatcher';
+our $cdprescan		= 'cdpDBScan';
+our $dbname			= 'cdp.ibenc';
+our $rescanlog		= 'rescan.log';
+our $cdpcpdircache	= 'cpentries.txt';
+our $dbFileIndex	= 0;
+our $cdpdbdumpdir	= 'CDPDBDUMP';
+our $failcommitdir	= 'FAILED_COMMIT';
+our $commitvault	= 'COMMIT_VAULT';
+our $cdphalt		= '.haltcdp';
+our $cdpmaxsize		= 524288000; # 500 * 1024 * 1024
+our $fsindexmax		= 5000;
+our $cdpscandet		= 5000;
+our $cdpdumptimeout	= 5;
+our $cdpdumpmaxrec	= 10000;
+our $repooppath		= '/tmp/pk-inst-op.log';
+our $repoerrpath	= '/tmp/pk-inst-err.log';
+our $instprog		= '/tmp/instprog.log';
+our $instproglock	= '/tmp/instprog.lock';
+# our $silinstprog	= '/tmp/silent_inst.prog';
+our $silinstlock	= '/tmp/silent_inst.lock';
 our $misctask		= 'miscellaneous';
 our $miscjob		= 'install';
+our $defrescanday	= '01';
+our $defrescanhr	= '12';
+our $defrescanmin	= '00';
+
+our $running = 'running';
+our $paused  = 'paused';
+our $more    = 'more';
+our $less    = 'less';
+our $backup  = 'backup';
+our $restore = 'restore';
+our $archive = 'archive';
+our $bkpscan = 'bkpscan';
+our $rescan  = 'rescan';
+our $scan    = 'scan';
+our $localbackup = 'localbackup';
+
+our %jobTitle = ('backup' => 'backup_job', 'restore' => 'restore_job', 'archive' => 'archive_job', 'localbackup' => 'localbackup_job', 'cdp' => 'cdp_job', 'bkpscan' => 'bkpscan_job', 'rescan' => 'rescan_job', 'localrestore' => 'localrestore_job');
+
+our %cdplocks		= ('client' => 'cdpclient.lock', 'server' => 'cdpserver.lock', 'watcher' => 'watcher.lock', 'bkpscan' => 'bkpscan.lock', 
+						'dbwritelock' => 'dbwrite.lock', 'rescan' => 'rescan.lock', 'backup' => 'backup.lock', 'prog' => 'prog.lock', 'scanprog' => 'scan.prog', 
+						'lport' => 'local.port');
+
+tie (our %dbdumpregs, 'Tie::IxHash',
+	'backup'		=> 'backup_dbupd_*',
+	'localbackup'	=> 'localbackup_dbupd_*',
+	'cdp'			=> 'cdp_dbupd_*',
+	'rescan'		=> 'rescan_dbupd_*',
+	'scan'			=> 'scan_dbupd_*',
+	'jssize'		=> 'js_size_*',
+	'ex_db_renew'	=> 'ex_db_renew_*',
+	'idx_del_upd'	=> 'idx_del_upd_*',
+	'bkpstat_reset'	=> 'bkpstat_reset_*',
+	'verify_xpres'	=> 'verify_local_*',
+	'db_cleanp'		=> 'db_cleanp_*',
+	'upd_mpc_self'	=> 'mpc_upd_self_*',
+	'rm_nonex_fl'	=> 'rm_nonex_fl_*',
+);
+
+our $webvxmldir = 'WebViewXML';
+
+our %dbfilestats	= ('NEW' => 0, 'BACKEDUP' => 1, 'MODIFIED' => 2, 'EXCLUDED' => 3, 'DELETED' => 4, 'CDP' => 10);
+our %deprecatedProfilePath = ('localbackup' => 'Backup/LocalBackupSet');
 
 our %userProfilePaths = (
-	'archive'     => 'Archive/DefaultBackupSet',
-	'backup'      => 'Backup/DefaultBackupSet',
-	'localbackup' => 'Backup/LocalBackupSet',
-	'restore'     => 'Restore/DefaultRestoreSet',
-	'user_info'   => '.userInfo',
-	'restore_data'=> 'Restore_Data',
-	'trace'       => '.trace',
-	'tmp'         => 'tmp',
+	'archive'		=> 'Archive/DefaultBackupSet',
+	'cdp'			=> 'CDP/DefaultBackupSet',
+	'backup'		=> 'Backup/DefaultBackupSet',
+	'localbackup'	=> 'LocalBackup/LocalBackupSet',
+	'restore'		=> 'Restore/DefaultRestoreSet',
+	'localrestore'  => 'LocalRestore/LocalRestoreSet',
+	'user_info'		=> '.userInfo',
+	'restore_data'	=> 'Restore_Data',
+	'trace'			=> '.trace',
+	'tmp'			=> 'tmp',
+	'dbreindex'     => 'DBReindex',
 );
 
-our %jobDir = (
-	'default_backupset'  => 'DefaultBackupSet',
-	'local_backupset' 	 => 'LocalBackupSet',
-	'default_restoreset' => 'DefaultRestoreSet',
-);
+our @defexcl = ('/proc/', '/sys/');
 
 our %fileSizeDetail = (
 	'bytes' => 'bytes',
@@ -280,94 +412,71 @@ our $activestat = 'Y';
 
 our $screenSize = '';
 $screenSize     = `stty size` if (-t STDIN);
-
+our $sleepTimeForProgress = 100;
+$sleepTimeForProgress = 500 if($machineOS =~ /freebsd/i);
 our $userConfChanged = 0;
 our $tab = "      ";
 
 our $proxyNetworkError = "failed to connect|Connection refused|Could not resolve proxy|Could not resolve host|No route to host|HTTP code 407|URL returned error: 407|407 Proxy Authentication Required|Connection timed out|response code said error|kindly_verify_ur_proxy";
 
-#############Multiple Engine#############
+# Multiple Engine
 our $totalEngineBackup = 4;
 use constant ENGINE_LOCKE_FILE => "engine.lock";
-#############Multiple Engine#############
+# Multiple Engine
 
-#our $evsDownloadsPage = "https://www.__APPTYPE__.com/downloads/linux/download-options__EVSTYPE__";
 our $evsDownloadsPage = "https://www.__APPTYPE__.com/downloads/linux/download-options";
-#our $evsDownloadsPage = " -u deepak:deepak http://192.168.3.169/svn/linux_repository/trunk/PackagesForTesting/IDriveForLinux/binaries";
-our $IDriveUsersCGI   = "https://www1.idrive.com/cgi-bin/v1/user-list.cgi";
-our $IBackupUsersCGI  = "http://www1.ibackup.com/cgi-bin/ibackup_get_email_ibsync_user_v1.cgi";
-our $IDriveAuthCGI  = "https://www1.idrive.com/cgi-bin/v1/user-details.cgi";
-our $IBackupAuthCGI = "https://www1.ibackup.com/cgi-bin/get_ibwin_evs_details_xml_ip.cgi?";
-our $IDriveErrorCGI = 'https://webdav.ibackup.com/cgi-bin/Notify_unicode';
+# our $evsDownloadsPage = " -u deepak:deepak http://192.168.3.169/svn/linux_repository/trunk/PackagesForTesting/IDriveForLinux/binaries";
+our $IDriveWebURL	= 'https://www.idrive.com/idrive/login/loginAuto/showEntDesign';
 
 # Software Update CGI
-my $trimmedVersion = $version;
+our $trimmedVersion = $version;
 my @matches = split('\.', $trimmedVersion);
 if (scalar(@matches) > 2) {
 	$trimmedVersion = $matches[0].".".$matches[1];
 }
-our $checkUpdateBaseCGI = "https://www1.ibackup.com/cgi-bin/check_version_upgrades_idrive_evs_new.cgi?'appln=${appType}ForLinux&version=$trimmedVersion'";
 
-our $IDriveBKPSummaryCGI = 'https://www1.idrive.com/cgi-bin/idrive_backup_summary.cgi';
 our $IDriveSupportEmail = 'support@'.lc($appType).'.com';
-our $notifyPath = 'https://webdav.ibackup.com/cgi-bin/Notify_email_ibl';
 
 # production download URL
-my $IDriveAppUrl = "https://www.idrivedownloads.com/downloads/linux/download-for-linux/IDriveScripts/IDriveForLinux.zip";
-# my $IDriveAppUrl = "http://192.168.3.147/IDriveForLinux.zip";
-# SVN download URL
-#my $IDriveAppUrl = " -u deepak:deepak http://192.168.3.169/svn/linux_repository/trunk/PackagesForTesting/IDriveForLinux/IDriveForLinux.zip";
+my $IDriveAppUrl = "https://www.idrivedownloads.com/downloads/linux/download-for-linux/IDrive_Scripts/IDriveForLinux.zip";
 
 # production download URL
 my $IBackupAppUrl = "https://www.ibackup.com/online-backup-linux/downloads/download-for-linux/IBackup_for_Linux.zip";
 # SVN download URL
 #my $IBackupAppUrl = " -u deepak:deepak http://192.168.3.169/svn/linux_repository/trunk/PackagesForTesting/IBackupForLinux/IBackup_for_Linux.zip";
-my $IDriveUserInoCGIUrl = "https://www1.idrive.com/cgi-bin/update_user_device_info.cgi?";
-my $IBackupUserInoCGIUrl = "https://www1.ibackup.com/cgi-bin/update_user_device_info.cgi?";
 our $accountSignupURL = "https://www.ibackup.com/newibackup/signup";
 $accountSignupURL = "https://www.idrive.com/idrive/signup" if($appType eq 'IDrive');
 
 our $appDownloadURL = ($appType eq 'IDrive')? $IDriveAppUrl : $IBackupAppUrl;
 our $appPackageName = ($appType eq 'IDrive')?'IDriveForLinux':'IBackup_for_Linux';
 our $appPackageExt  = '.zip';
-our $IDriveUserInoCGI  =  ($appType eq 'IDrive')? $IDriveUserInoCGIUrl : $IBackupUserInoCGIUrl;
 
 our %evsZipFiles = (
 	'IDrive' => {
 		'32' => ['__APPTYPE___linux_32bit.zip', '__APPTYPE___QNAP_32bit.zip'],
-		'64' => ['__APPTYPE___linux_64bit.zip', '__APPTYPE___QNAP_64bit.zip', '__APPTYPE___synology_64bit.zip', '__APPTYPE___synology_aarch64bit.zip', '__APPTYPE___Netgear_64bit.zip', '__APPTYPE___Vault_64bit.zip', '__APPTYPE___linux_32bit.zip', '__APPTYPE___QNAP_32bit.zip'],
+		'64' => ['__APPTYPE___linux_64bit.zip', '__APPTYPE___QNAP_64bit.zip', '__APPTYPE___synology_64bit.zip', '__APPTYPE___Vault_64bit.zip', '__APPTYPE___linux_32bit.zip', '__APPTYPE___QNAP_32bit.zip'],
 		'freebsd' => ['__APPTYPE___Vault_64bit.zip'],
-		'arm' => ['__APPTYPE___QNAP_ARM.zip', '__APPTYPE___synology_ARM.zip',
-							'__APPTYPE___Netgear_ARM.zip', '__APPTYPE___synology_Alpine.zip'],
-		'x' => ['__APPTYPE___linux_universal.zip'],
+		'arm' => ['__APPTYPE___QNAP_ARM.zip', '__APPTYPE___synology_ARM.zip', '__APPTYPE___synology_aarch64bit.zip', '__APPTYPE___Netgear_ARM.zip', '__APPTYPE___synology_Alpine.zip'],
 	},
 	'IBackup' => {
 		'32' => ['__APPTYPE___linux_32bit.zip', '__APPTYPE___QNAP_32bit.zip', '__APPTYPE___synology_64bit.zip', '__APPTYPE___Netgear_64bit.zip', '__APPTYPE___Vault_64bit.zip'],
 		'64' => ['__APPTYPE___linux_64bit.zip', '__APPTYPE___QNAP_64bit.zip', '__APPTYPE___synology_64bit.zip', '__APPTYPE___Netgear_64bit.zip', '__APPTYPE___Vault_64bit.zip', '__APPTYPE___linux_32bit.zip', '__APPTYPE___QNAP_32bit.zip'],
 		'freebsd' => ['__APPTYPE___Vault_64bit.zip'],
-		'arm' => ['__APPTYPE___QNAP_ARM.zip', '__APPTYPE___synology_ARM.zip',
-							'__APPTYPE___Netgear_ARM.zip', '__APPTYPE___synology_Alpine.zip'],
-		'x' => ['__APPTYPE___linux_universal.zip'],
+		'arm' => ['__APPTYPE___QNAP_ARM.zip', '__APPTYPE___synology_ARM.zip', '__APPTYPE___Netgear_ARM.zip', '__APPTYPE___synology_Alpine.zip'],
 	},
 );
 
 our %staticperlZipFiles = (
-	'32'      => ["idrive_perl/$staticPerlVersion/__KVER__/x86.zip"],
-	'64'      => ["idrive_perl/$staticPerlVersion/__KVER__/x86_64.zip"],
-	'freebsd' => ["idrive_perl/$staticPerlVersion/freebsd.zip"],
+	'32'      => ("idrive_dependency/$staticPerlVersion/__KVER__/x86/perl.zip"),
+	'64'      => ("idrive_dependency/$staticPerlVersion/__KVER__/x86_64/perl.zip"),
+	'freebsd' => ("idrive_dependency/$staticPerlVersion/freebsd/perl.zip"),
 );
 
-our %evsAPI = (
-	'IDrive' => {
-		'getServerAddress' => 'https://evs.idrive.com/evs/getServerAddress',
-		'configureAccount' => 'https://EVSSERVERADDRESS/evs/configureAccount',
-		'getAccountQuota'  => 'https://EVSSERVERADDRESS/evs/getAccountQuota',
-	},
-	'IBackup' => {
-		'getServerAddress' => 'https://evs.ibackup.com/evs/getServerAddress',
-		'configureAccount' => 'https://EVSSERVERADDRESS/evs/configureAccount',
-		'getAccountQuota' => 'https://EVSSERVERADDRESS/evs/getAccountQuota',
-	},
+our %pythonZipFiles = (
+	'32'      => ("idrive_dependency/$pythonVersion/__KVER__/x86/python.zip"),
+	'64'      => ("idrive_dependency/$pythonVersion/__KVER__/x86_64/python.zip"),
+	'arm'     => ("idrive_dependency/$pythonVersion/__KVER__/arm/python.zip"),
+	'freebsd' => ("idrive_dependency/$pythonVersion/freebsd/python.zip"),
 );
 
 # We know that 32 bit works on 64 bit machines, so we give it a try
@@ -399,14 +508,30 @@ tie (our %availableJobsSchema, 'Tie::IxHash',
 		runas => ['SCHEDULED', 'immediate'],
 		croncmd => "%s SCHEDULED %s", # Script name & username
 	},
+	localrestore => {
+		path => "__SERVICEPATH__/$userProfilePath/$mcUser/__USERNAME__/$userProfilePaths{'localrestore'}/",
+		logs => "__SERVICEPATH__/$userProfilePath/$mcUser/__USERNAME__/$userProfilePaths{'localrestore'}/$logDir",
+		file => "__SERVICEPATH__/$userProfilePath/$mcUser/__USERNAME__/$userProfilePaths{'localrestore'}/$restoresetFile",
+		type => 'restore',
+		runas => [],
+		croncmd => "",
+	},
 	archive => {
 		path => "__SERVICEPATH__/$userProfilePath/$mcUser/__USERNAME__/$userProfilePaths{'archive'}/",
 		logs => "__SERVICEPATH__/$userProfilePath/$mcUser/__USERNAME__/$userProfilePaths{'archive'}/$logDir",
 		file => "__SERVICEPATH__/$userProfilePath/$mcUser/__USERNAME__/$userProfilePaths{'archive'}/$backupsetFile",
 		type => 'archive',
 		runas => [],
-		croncmd => "%s %s %s %s %s", # script name, username, percentage, days & timestamp
-	}
+        croncmd => "%s %s %s %s %s %s", # script name, username, days, percentage, timestamp, isEmptyDirDelete
+	},
+	cdp => {
+		path => "__SERVICEPATH__/$userProfilePath/$mcUser/__USERNAME__/$userProfilePaths{'cdp'}/",
+		logs => "__SERVICEPATH__/$userProfilePath/$mcUser/__USERNAME__/$userProfilePaths{'cdp'}/$logDir",
+		file => "__SERVICEPATH__/$userProfilePath/$mcUser/__USERNAME__/$userProfilePaths{'backup'}/$backupsetFile",
+		type => 'cdp',
+		runas => ['SCHEDULED', 'immediate', 'CDP'],
+		croncmd => "%s %s %s", # Script name, runas & username
+	},
 );
 
 use constant JOBEXITCODE => {
@@ -418,10 +543,12 @@ use constant JOBEXITCODE => {
 };
 
 tie (our %logMenuAndPaths, 'Tie::IxHash',
-	'backup'      => 'backup_logs',
-	'localbackup' => 'express_backup_logs',
-	'restore'     => 'restore_logs',
-	'archive'     => 'archive_cleanup_logs',
+	'backup'		=> 'backup_logs',
+	'localbackup'	=> 'local_backup_logs',
+	'restore'		=> 'restore_logs',
+	'localrestore'	=> 'local_restore_logs',
+	'archive'		=> 'archive_cleanup_logs',
+	'cdp'			=> 'cdp_logs',
 );
 
 tie (our %excludeFilesSchema, 'Tie::IxHash',
@@ -455,13 +582,20 @@ our %evsAPIPatterns = (
 	'FILEVERSION'      => "--version-info\n--xml-output\n__getUsername__\@__getServerAddress__::home/__ARG1__",
 	'SEARCH'           => "--search\n--o=__ARG1__\n--e=__ARG2__\n--xml-output\n--file\n__getUsername__\@__getServerAddress__::home/__ARG3__",
 	'SEARCHALL'        => "--search\n--all\n--o=__ARG1__\n--e=__ARG2__\n--xml-output\n--file\n__getUsername__\@__getServerAddress__::home/__ARG3__",
-	'ITEMSTATUS'       => "--items-status\n--files-from=__ARG1__\n--e=__ARG2__\n--xml-output\n--file\n__getUsername__\@__getServerAddress__::home/",
+	'SEARCHARCHIVE'    => "--search\n--o=__ARG1__\n--e=__ARG2__\n--xml-output\n__getUsername__\@__getServerAddress__::home/__ARG3__",
+	'ITEMSTATUS3'      => "--items-status3\n--files-from=__ARG1__\n--e=__ARG2__\n--xml-output\n--file\n__getUsername__\@__getServerAddress__::home/__ARG3__",
+	'ITEMSTATUS'       => "--items-status\n--files-from=__ARG1__\n--e=__ARG2__\n--xml-output\n--file\n__getUsername__\@__getServerAddress__::home/__ARG3__",
 	'PROPERTIES'       => "--properties\n--e=__ARG1__\n--xml-output\n__getUsername__\@__getServerAddress__::home/__ARG2__",
 	'DELETE'           => "--delete-items\n--files-from=__ARG1__\n--o=__ARG2__\n--e=__ARG3__\n--xml-output\n__getUsername__\@__getServerAddress__::home/",
 	'AUTHLIST'         => "--auth-list\n--o=__ARG1__\n--e=__ARG2__\n--xml-output\n__getUsername__\@__getServerAddress__::home/__ARG3__",
 	'EXPRESSBACKUP'    => "--files-from=__ARG1__\n--bw-file=__ARG2__\n--type\n--def-local=__ARG3__\n--add-progress\n--temp=__ARG4__\n--xml-output\n--enc-opt\n__ARG5__\n--portable\n--no-versions\n--o=__ARG6__\n--e=__ARG7__\n--portable-dest=__ARG8__\n__ARG9__\n__getUsername__\@__getServerAddress__::home/__ARG10__",
 	'BACKUP'           => "--files-from=__ARG1__\n--bw-file=__ARG2__\n--type\n--add-progress\n--100percent-progress\n--temp=__ARG3__\n--xml-output\n--o=__ARG4__\n--e=__ARG5__\n__ARG6__\n__getUsername__\@__getServerAddress__::home/__ARG7__",
-	'LOGBACKUP'        => "--files-from=__ARG1__\n--xml-output\n--backup-log\n--no-relative\n--temp=__ARG2__\n--o=__ARG3__\n--e=__ARG4__\n/\n__getUsername__\@__getServerAddress__::home/--ILD--/$hostname/log/",
+	# 'LOGBACKUP'        => "--files-from=__ARG1__\n--xml-output\n--backup-log\n--no-relative\n--temp=__ARG2__\n--o=__ARG3__\n--e=__ARG4__\n/\n__getUsername__\@__getServerAddress__::home/--ILD--/$hostname/log/",
+	'LOGBACKUP'        => "--files-from=__ARG1__\n--xml-output\n--backup-log\n--no-relative\n--temp=__ARG2__\n--o=__ARG3__\n--e=__ARG4__\n/\n__getUsername__\@__getServerAddress__::home/--ILD--/$hostname/__ARG5__",
+	'CHANGEINDEX'		=> "--xml-output\n--port=443\n--type\n--search\n--timeout=60\n--file-index64=__ARG1__\n--app-index64\n--o=__ARG2__\n__getUsername__\@__getServerAddress__::home/",
+	'CHANGENOINDEX'		=> "--xml-output\n--port=443\n--type\n--search\n--timeout=60\n--file-index64=__ARG1__\n--o=__ARG2__\n__getUsername__\@__getServerAddress__::home/",
+	'LOCALRESTORE'	   => "--files-from=__ARG1__\n--add-progress\n--enc-opt\n--def-local=__ARG2__\n--temp=__ARG3__\n--xml-output\n--mask-name\n--o=__ARG4__\n--e=__ARG5__\n--portable\n--portable-dest=__ARG6__\n__getUsername__\@__getServerAddress__::home/__ARG6__\n__ARG7__\n",
+	'DBREINDEX'		   => "--expressdb-recreate\n--xml-output\n--user=__getUsername__\n--o=__ARG1__\n--e=__ARG2__\n--portable-dest=__ARG3__\n",
 );
 
 tie(our %userConfigurationSchema, 'Tie::IxHash',
@@ -575,7 +709,7 @@ tie(our %userConfigurationSchema, 'Tie::IxHash',
 		required => 1000,
 		default  => 100,
 		type => 'regex',
-		regex => '^(?:[1-9]\d?|100)$',
+		regex	   => '^(?:[1-9]\d?|100)$',
 		for_dashboard => 1,
 	},
 	BACKUPTYPE => {
@@ -654,7 +788,7 @@ tie(our %userConfigurationSchema, 'Tie::IxHash',
 		cgi_name => 'remote_manage_server',
 		evs_name => '',
 		required => 0,
-		default  => '',
+		default => '',
 		type     => 'regex',
 		for_dashboard => 0,
 	},
@@ -730,6 +864,31 @@ tie(our %userConfigurationSchema, 'Tie::IxHash',
 		type     => 'regex',
 		for_dashboard => 1,
 	},
+	LOCALRESTOREFROM => {
+		cgi_name => '',
+		evs_name => '',
+		required => 0,
+		default  => '',
+		type     => 'regex',
+		for_dashboard => 1,
+	},
+	LOCALRESTOREMOUNTPOINT => {
+		cgi_name => '',
+		evs_name => '',
+		required => 0,
+		default  => '',
+		type     => 'regex',
+		for_dashboard => 1,
+	},
+	LOCALRESTORESERVERROOT => {
+		cgi_name => '',
+		evs_name => '',
+		required => 0,
+		default  => '',
+		type     => 'regex',
+		lockable => 0,
+		for_dashboard => 0,
+	},
 	# Notify as Failure if the total files failed for backup is more than
 	# % of the total files backed up
 	NFB => {
@@ -746,7 +905,7 @@ tie(our %userConfigurationSchema, 'Tie::IxHash',
 		cgi_name => '',
 		evs_name => '',
 		required => 0,
-		default  => 4,
+		default  => $maxEngineCount,
 		type => 'regex',
 		for_dashboard => 1,
 	},
@@ -813,6 +972,38 @@ tie(our %userConfigurationSchema, 'Tie::IxHash',
 		type     => 'regex',
 		for_dashboard => 0,
 	},
+	CDP => {
+		cgi_name => '',
+		evs_name => '',
+		required => 0,
+		default  => 0,
+		type     => 'regex',
+		for_dashboard => 1,
+	},
+	RESCANINTVL => {
+		cgi_name => '',
+		evs_name => '',
+		required => 0,
+		default  => "$defrescanday:$defrescanhr:$defrescanmin",
+		type     => 'regex',
+		for_dashboard => 1,
+	},
+	LASTFILEINDEX => {
+		cgi_name => '',
+		evs_name => '',
+		required => 0,
+		default  => 0,
+		type     => 'regex',
+		for_dashboard => 0,
+	},
+	CDPSUPPORT => {
+		cgi_name => '',
+		evs_name => '',
+		required => 0,
+		default  => 0,
+		type     => 'regex',
+		for_dashboard => 1,
+	},
 	WEBAPI => {
 		cgi_name => 'evswebsrvr',
 		evs_name => 'webApiServer',
@@ -826,6 +1017,22 @@ tie(our %userConfigurationSchema, 'Tie::IxHash',
 		evs_name => '',
 		required => 0,
 		default  => '',
+		type     => 'regex',
+		for_dashboard => 0,
+	},
+	BACKUPLOCATIONSIZE => {
+		cgi_name => '',
+		evs_name => '',
+		required => 0,
+		default  => 0,
+		type     => 'regex',
+		for_dashboard => 0,
+	},
+    EXCLUDESETUPDATED=> {
+		cgi_name => '',
+		evs_name => '',
+		required => 0,
+		default  => 0,
 		type     => 'regex',
 		for_dashboard => 0,
 	},
@@ -929,9 +1136,41 @@ tie(our %notifOptions, 'Tie::IxHash',
 	'notify_failure' => 'notify_failure'
 );
 
+tie(our %supportedOSList, 'Tie::IxHash',
+	1 => 'Centos',
+	2 => 'Debian',
+    3 => 'Fedora',
+    4 => 'Fedoracore',
+    5 => 'Freebsd',
+    6 => 'Gentoo',
+    7 => 'Linuxmint',
+    8 => 'Manjarolinux',
+    9 => 'Opensuse',
+    10 => 'Ubuntu',
+);
+
 # @TODO: need to analyze older version of the OS's and have to add configurations
-# fallback will take care if schema not present
+# fall back will take care if schema not present
 our %cronLaunchCodes = (
+	'archlinux' => {
+		'gt-0.8' => {
+			'pidpath' => $cronservicepid,
+			'confappend' => {},
+			'shellcp' => {
+				'idrivecron.service' => "/lib/systemd/system/$appCron.service"
+			},
+			'shellln' => {},
+			'setupcmd' => ["systemctl enable $appCron", "systemctl start $appCron"],
+			'stopcmd' => ["systemctl stop $appCron", "systemctl disable $appCron"],
+			'restartcmd' => "systemctl restart $appCron",
+			'startcmd' => "systemctl start $appCron",
+			'launcherdecoy' => '__LAUNCHPATH__',
+			'setupdir' => "$cronSetupPath/archlinux/gte-0.8/",
+			'req-serv' => '',
+			'base-conf-key' => '',
+			'serv-mod' => 'sd',
+		},
+	},
 	'centos' => {
 		'lt-6.00' => {
 			'pidpath' => $cronservicepid,
@@ -941,8 +1180,12 @@ our %cronLaunchCodes = (
 			'setupcmd' => ["chkconfig --add $appCron", "/etc/init.d/$appCron start"],
 			'stopcmd' => ["/etc/init.d/$appCron stop", "chkconfig --del $appCron"],
 			'restartcmd' => "/etc/init.d/$appCron restart",
+			'startcmd' => "/etc/init.d/$appCron start",
 			'launcherdecoy' => '__LAUNCHPATH__',
-			'setupdir' => "$cronSetupPath/centos/lt-6.00/"
+			'setupdir' => "$cronSetupPath/centos/lt-6.00/",
+			'req-serv' => '',
+			'base-conf-key' => '',
+			'serv-mod' => 'sv',
 		},
 		'btw-6.00_6.99' => {
 			'pidpath' => $cronservicepid,
@@ -954,19 +1197,27 @@ our %cronLaunchCodes = (
 			'setupcmd' => ["initctl start $appCron"],
 			'stopcmd' => ["initctl stop $appCron"],
 			'restartcmd' => "initctl restart $appCron",
+			'startcmd' => "initctl start $appCron",
 			'launcherdecoy' => '__LAUNCHPATH__',
-			'setupdir' => "$cronSetupPath/centos/btw-6.00_6.99/"
+			'setupdir' => "$cronSetupPath/centos/btw-6.00_6.99/",
+			'req-serv' => 'initctl',
+			'base-conf-key' => 'lt-6.00',
+			'serv-mod' => 'ups',
 		},
 		'gte-7.00' => {
 			'pidpath' => $cronservicepid,
 			'confappend' => {},
 			'shellcp' => {"idrivecron.service" => "/lib/systemd/system/$appCron.service"},
 			'shellln' => {},
-			'setupcmd' => ["systemctl unmask $appCron", "systemctl enable $appCron", "systemctl start $appCron"],
-			'stopcmd' => ["systemctl stop $appCron", "systemctl disable $appCron"],
+			'setupcmd' => ["systemctl unmask $appCron.service", "systemctl enable $appCron.service", "systemctl start $appCron.service"],
+			'stopcmd' => ["systemctl stop $appCron.service", "systemctl disable $appCron.service"],
 			'restartcmd' => "systemctl restart $appCron",
+			'startcmd' => "systemctl start $appCron",
 			'launcherdecoy' => '__LAUNCHPATH__',
-			'setupdir' => "$cronSetupPath/centos/gte-7.00/"
+			'setupdir' => "$cronSetupPath/centos/gte-7.00/",
+			'req-serv' => 'systemctl',
+			'base-conf-key' => 'lt-6.00',
+			'serv-mod' => 'sd',
 		}
 	},
 	'debian' => {
@@ -980,8 +1231,12 @@ our %cronLaunchCodes = (
 			'setupcmd' => ["update-rc.d $appCron defaults", "/etc/init.d/$appCron start"],
 			'stopcmd' => ["/etc/init.d/$appCron stop", "update-rc.d -f $appCron remove"],
 			'restartcmd' => "/etc/init.d/$appCron restart",
+			'startcmd' => "/etc/init.d/$appCron start",
 			'launcherdecoy' => '__LAUNCHPATH__',
-			'setupdir' => "$cronSetupPath/debian/lt-6.00/"
+			'setupdir' => "$cronSetupPath/debian/lt-6.00/",
+			'req-serv' => '',
+			'base-conf-key' => '',
+			'serv-mod' => 'sv',
 		},
 		'btw-6.00_8.50' => {
 			'pidpath' => $cronservicepid,
@@ -993,8 +1248,12 @@ our %cronLaunchCodes = (
 			'setupcmd' => ["insserv $appCron", "/etc/init.d/$appCron start"],
 			'stopcmd' => ["/etc/init.d/$appCron stop", "insserv -r $appCron"],
 			'restartcmd' => "/etc/init.d/$appCron restart",
+			'startcmd' => "/etc/init.d/$appCron start",
 			'launcherdecoy' => '__LAUNCHPATH__',
-			'setupdir' => "$cronSetupPath/debian/btw-6.00_8.50/"
+			'setupdir' => "$cronSetupPath/debian/btw-6.00_8.50/",
+			'req-serv' => 'insserv',
+			'base-conf-key' => 'lt-6.00',
+			'serv-mod' => 'ups',
 		},
 		'gt-8.50' => {
 			'pidpath' => $cronservicepid,
@@ -1006,8 +1265,12 @@ our %cronLaunchCodes = (
 			'setupcmd' => ["systemctl enable $appCron", "systemctl start $appCron"],
 			'stopcmd' => ["systemctl stop $appCron", "systemctl disable $appCron"],
 			'restartcmd' => "systemctl restart $appCron",
+			'startcmd' => "systemctl start $appCron",
 			'launcherdecoy' => '__LAUNCHPATH__',
-			'setupdir' => "$cronSetupPath/debian/gt-8.50/"
+			'setupdir' => "$cronSetupPath/debian/gt-8.50/",
+			'req-serv' => 'systemctl',
+			'base-conf-key' => 'lt-6.00',
+			'serv-mod' => 'sd',
 		},
 	},
 	'fedora' => {
@@ -1019,8 +1282,12 @@ our %cronLaunchCodes = (
 			'setupcmd' => ["chkconfig --add $appCron", "/etc/init.d/$appCron start"],
 			'stopcmd' => ["/etc/init.d/$appCron stop", "chkconfig --del $appCron"],
 			'restartcmd' => "/etc/init.d/$appCron restart",
+			'startcmd' => "/etc/init.d/$appCron start",
 			'launcherdecoy' => '__LAUNCHPATH__',
-			'setupdir' => "$cronSetupPath/fedora/lte-13.99/"
+			'setupdir' => "$cronSetupPath/fedora/lte-13.99/",
+			'req-serv' => '',
+			'base-conf-key' => '',
+			'serv-mod' => 'sv',
 		},
 		'gte-14.0' => {
 			'pidpath' => $cronservicepid,
@@ -1030,8 +1297,12 @@ our %cronLaunchCodes = (
 			'setupcmd' => ["systemctl unmask $appCron.service", "systemctl enable $appCron.service", "systemctl start $appCron.service"],
 			'stopcmd' => ["systemctl stop $appCron.service", "systemctl disable $appCron.service"],
 			'restartcmd' => "systemctl restart $appCron",
+			'startcmd' => "systemctl start $appCron",
 			'launcherdecoy' => '__LAUNCHPATH__',
-			'setupdir' => "$cronSetupPath/fedora/gte-14.0/"
+			'setupdir' => "$cronSetupPath/fedora/gte-14.0/",
+			'req-serv' => 'systemctl',
+			'base-conf-key' => 'lte-13.99',
+			'serv-mod' => 'sd',
 		}
 	},
 	'fedoracore' => {
@@ -1043,8 +1314,12 @@ our %cronLaunchCodes = (
 			'setupcmd' => ["chkconfig --add $appCron", "/etc/init.d/$appCron start"],
 			'stopcmd' => ["/etc/init.d/$appCron stop", "chkconfig --del $appCron"],
 			'restartcmd' => "/etc/init.d/$appCron restart",
+			'startcmd' => "/etc/init.d/$appCron start",
 			'launcherdecoy' => '__LAUNCHPATH__',
-			'setupdir' => "$cronSetupPath/fedoracore/lt-7.00/"
+			'setupdir' => "$cronSetupPath/fedoracore/lt-7.00/",
+			'req-serv' => '',
+			'base-conf-key' => '',
+			'serv-mod' => 'sv',
 		},
 	},
 	'freebsd' => {
@@ -1056,8 +1331,12 @@ our %cronLaunchCodes = (
 			'setupcmd' => ["service $appCron start"],
 			'stopcmd' => ["service $appCron stop"],
 			'restartcmd' => "service $appCron restart",
+			'startcmd' => "service $appCron start",
 			'launcherdecoy' => '__LAUNCHPATH__',
-			'setupdir' => "$cronSetupPath/freebsd/gte-11.0/"
+			'setupdir' => "$cronSetupPath/freebsd/gte-11.0/",
+			'req-serv' => '',
+			'base-conf-key' => '',
+			'serv-mod' => 'rc',
 		},
 	},
 	'gentoo' => {
@@ -1069,8 +1348,12 @@ our %cronLaunchCodes = (
 			'setupcmd' => ["rc-update add $appCron default", "service $appCron start"],
 			'stopcmd' => ["service $appCron stop", "rc-update delete $appCron default"],
 			'restartcmd' => "service $appCron restart",
+			'startcmd' => "service $appCron start",
 			'launcherdecoy' => '__LAUNCHPATH__',
-			'setupdir' => "$cronSetupPath/gentoo/gte-1.0/"
+			'setupdir' => "$cronSetupPath/gentoo/gte-1.0/",
+			'req-serv' => '',
+			'base-conf-key' => '',
+			'serv-mod' => 'sv',
 		},
 	},
 	'linuxmint' => {
@@ -1084,8 +1367,12 @@ our %cronLaunchCodes = (
 			'setupcmd' => ["systemctl enable $appCron", "systemctl start $appCron"],
 			'stopcmd' => ["systemctl stop $appCron", "systemctl disable $appCron"],
 			'restartcmd' => "systemctl restart $appCron",
+			'startcmd' => "systemctl start $appCron",
 			'launcherdecoy' => '__LAUNCHPATH__',
-			'setupdir' => "$cronSetupPath/linuxmint/gte-15.0/"
+			'setupdir' => "$cronSetupPath/linuxmint/gte-15.0/",
+			'req-serv' => '',
+			'base-conf-key' => '',
+			'serv-mod' => 'sd',
 		},
 	},
 	'manjarolinux' => {
@@ -1099,8 +1386,12 @@ our %cronLaunchCodes = (
 			'setupcmd' => ["systemctl enable $appCron", "systemctl start $appCron"],
 			'stopcmd' => ["systemctl stop $appCron", "systemctl disable $appCron"],
 			'restartcmd' => "systemctl restart $appCron",
+			'startcmd' => "systemctl start $appCron",
 			'launcherdecoy' => '__LAUNCHPATH__',
-			'setupdir' => "$cronSetupPath/manjarolinux/gte-0.8/"
+			'setupdir' => "$cronSetupPath/manjarolinux/gte-0.8/",
+			'req-serv' => '',
+			'base-conf-key' => '',
+			'serv-mod' => 'sd',
 		},
 	},
 	'opensuse' => {
@@ -1112,8 +1403,12 @@ our %cronLaunchCodes = (
 			'setupcmd' => ["chkconfig --add $appCron", "/etc/init.d/$appCron start"],
 			'stopcmd' => ["/etc/init.d/$appCron stop", "chkconfig --del $appCron"],
 			'restartcmd' => "/etc/init.d/$appCron restart",
+			'startcmd' => "/etc/init.d/$appCron start",
 			'launcherdecoy' => '__LAUNCHPATH__',
-			'setupdir' => "$cronSetupPath/opensuse/lte-14.99/"
+			'setupdir' => "$cronSetupPath/opensuse/lte-14.99/",
+			'req-serv' => '',
+			'base-conf-key' => '',
+			'serv-mod' => 'sv',
 		},
 		'gte-15.0' => {
 			'pidpath' => $cronservicepid,
@@ -1123,8 +1418,48 @@ our %cronLaunchCodes = (
 			'setupcmd' => ["systemctl unmask $appCron", "systemctl enable $appCron", "systemctl start $appCron"],
 			'stopcmd' => ["systemctl stop $appCron", "systemctl disable $appCron"],
 			'restartcmd' => "systemctl restart $appCron",
+			'startcmd' => "systemctl start $appCron",
 			'launcherdecoy' => '__LAUNCHPATH__',
-			'setupdir' => "$cronSetupPath/opensuse/gte-15.0/"
+			'setupdir' => "$cronSetupPath/opensuse/gte-15.0/",
+			'req-serv' => 'systemctl',
+			'base-conf-key' => 'lte-14.99',
+			'serv-mod' => 'sd',
+		},
+	},
+	'raspbian' => {
+		'gt-1.00' => {
+			'pidpath' => $cronservicepid,
+			'confappend' => {},
+			'shellcp' => {
+				"idrivecron.service" => "/lib/systemd/system/$appCron.service"
+			},
+			'shellln' => {},
+			'setupcmd' => ["systemctl enable $appCron", "systemctl start $appCron"],
+			'stopcmd' => ["systemctl stop $appCron", "systemctl disable $appCron"],
+			'restartcmd' => "systemctl restart $appCron",
+			'startcmd' => "systemctl start $appCron",
+			'launcherdecoy' => '__LAUNCHPATH__',
+			'setupdir' => "$cronSetupPath/debian/gt-8.50/",
+			'req-serv' => 'systemctl',
+			'base-conf-key' => '',
+			'serv-mod' => 'sd',
+		},
+	},
+	'selinux' => {
+		'gt-0' => {
+			'pidpath' => $cronservicepid,
+			'confappend' => {},
+			'shellcp' => {"idrivecron" => "/etc/init.d/$appCron"},
+			'shellln' => {},
+			'setupcmd' => ["/etc/init.d/$appCron start"],
+			'stopcmd' => ["/etc/init.d/$appCron stop"],
+			'restartcmd' => "/etc/init.d/$appCron restart",
+			'startcmd' => "/etc/init.d/$appCron start",
+			'launcherdecoy' => '__LAUNCHPATH__',
+			'setupdir' => "$cronSetupPath/selinux/gt-0/",
+			'req-serv' => '',
+			'base-conf-key' => '',
+			'serv-mod' => 'sv',
 		},
 	},
 	'ubuntu' => {
@@ -1138,8 +1473,12 @@ our %cronLaunchCodes = (
 			'setupcmd' => ["update-rc.d $appCron defaults", "/etc/init.d/$appCron start"],
 			'stopcmd' => ["/etc/init.d/$appCron stop", "update-rc.d -f $appCron remove"],
 			'restartcmd' => "/etc/init.d/$appCron restart",
+			'startcmd' => "/etc/init.d/$appCron start",
 			'launcherdecoy' => '__LAUNCHPATH__',
-			'setupdir' => "$cronSetupPath/ubuntu/lte-9.04/"
+			'setupdir' => "$cronSetupPath/ubuntu/lte-9.04/",
+			'req-serv' => '',
+			'base-conf-key' => '',
+			'serv-mod' => 'sv',
 		},
 		'btw-9.10_14.10' => {
 			'pidpath' => $cronservicepid,
@@ -1151,8 +1490,12 @@ our %cronLaunchCodes = (
 			'setupcmd' => ["service $appCron start"],
 			'stopcmd' => ["service $appCron stop"],
 			'restartcmd' => "service $appCron restart",
+			'startcmd' => "service $appCron start",
 			'launcherdecoy' => '__LAUNCHPATH__',
-			'setupdir' => "$cronSetupPath/ubuntu/btw-9.10_14.10/"
+			'setupdir' => "$cronSetupPath/ubuntu/btw-9.10_14.10/",
+			'req-serv' => 'service',
+			'base-conf-key' => 'lte-9.04',
+			'serv-mod' => 'ups',
 		},
 		'gte-15.04' => {
 			'pidpath' => $cronservicepid,
@@ -1164,56 +1507,767 @@ our %cronLaunchCodes = (
 			'setupcmd' => ["systemctl enable $appCron.service", "systemctl start $appCron.service"],
 			'stopcmd' => ["systemctl stop $appCron.service", "systemctl disable $appCron.service"],
 			'restartcmd' => "systemctl restart $appCron.service",
+			'startcmd' => "systemctl start $appCron.service",
 			'launcherdecoy' => '__LAUNCHPATH__',
-			'setupdir' => "$cronSetupPath/ubuntu/gte-15.00/"
+			'setupdir' => "$cronSetupPath/ubuntu/gte-15.00/",
+			'req-serv' => 'systemctl',
+			'base-conf-key' => 'lte-9.04',
+			'serv-mod' => 'sd',
+		},
+	},
+);
+
+our %pmDNFPacksFed34 = ('File::Copy' => 'perl-File-Copy', 'Sys::Hostname' => 'perl-Sys-Hostname', 'Tie::File' => 'perl-Tie-File');
+
+our %depInstallUtils = (
+	'archlinux' => {
+		'pkg-install' => ["pacman --noconfirm -S unzip curl"],
+		'pkg-sil-append-cmd' => '',
+		'pkg-err-ignore' => '',
+		'cpan-append-cmd' => "PERL_AUTOINSTALL='--defaultdeps'",
+		'cpan-conf' => {},
+		'cpan-install' => [
+			"yes | __CPAN_AUTOINSTALL__ perl -MCPAN -e 'install DBI'",
+			"__CPAN_AUTOINSTALL__ perl -MCPAN -e 'install YAML'",
+			"__CPAN_AUTOINSTALL__ perl -MCPAN -e 'install Test::Simple'",
+			"__CPAN_AUTOINSTALL__ perl -MCPAN -e 'install DBD::SQLite'",
+			"__CPAN_AUTOINSTALL__ perl -MCPAN -e 'install common::sense'",
+			"__CPAN_AUTOINSTALL__ perl -MCPAN -e 'install Linux::Inotify2'",
+		],
+		'pkg-repo-error' => 'could not resolve|failed to retrieve|download library error',
+		'rollback' => [],
+	},
+	'centos' => {
+		'pkg-install' => [
+			"yum -y groupinstall 'Development Tools'",
+			"yum -y install gcc",
+			"yum -y install unzip",
+			"yum -y install curl",
+			"yum -y install automake",
+			"yum -y install perl-CPAN",
+			"yum -y install perl-DBI",
+			"yum -y install perl-DBD-SQLite",
+			"yum -y install perl-Time-HiRes",
+			"yum -y install perl-YAML",
+		],
+		'pkg-sil-append-cmd' => '',
+		'pkg-err-ignore' => 'yum groups mark|trying other mirror|no packages in any requested group|listed more than once|synchronize cache|valueerror|header v3 dsa signature|already installed|no match|no installed groups',
+		'cpan-append-cmd' => "PERL_AUTOINSTALL='--defaultdeps'",
+		'cpan-conf' => {
+			'lt-6' => ["__CPAN_AUTOINSTALL__ perl -MCPAN -e 'install Test::Simple' < \"__APP_PATH__/$cpanSetupPath/centos/lt-6.00/cpan.conf\""],
+			'btw-6.00_6.99' => ["yes | __CPAN_AUTOINSTALL__ perl -MCPAN -e 'install Test::Simple'"],
+			'gte-7' => ["__CPAN_AUTOINSTALL__ perl -MCPAN -e 'install Test::Simple' < \"__APP_PATH__/$cpanSetupPath/centos/gte-7/cpan.conf\""],
+		},
+		'cpan-install' => [
+			"__CPAN_AUTOINSTALL__ perl -MCPAN -e 'install DBI'",
+			"__CPAN_AUTOINSTALL__ perl -MCPAN -e 'install DBD::SQLite'",
+			"__CPAN_AUTOINSTALL__ perl -MCPAN -e 'install common::sense'",
+			"__CPAN_AUTOINSTALL__ perl -MCPAN -e 'install Linux::Inotify2'",
+		],
+		'pkg-repo-error' => 'could not resolve|valid baseurl for repo',
+		'rollback' => [],
+	},
+	'debian' => {
+		'pkg-install' => [
+			"apt-get -y install unzip",
+			"apt-get -y install curl",
+			"apt-get -y install sqlite3",
+			"apt-get -y install build-essential",
+			"apt-get -y install perl-doc",
+		],
+		'pkg-sil-append-cmd' => 'export DEBIAN_FRONTEND=noninteractive',
+		'pkg-err-ignore' => 'dpkg-preconfigure|extracting templates',
+		'cpan-append-cmd' => "PERL_AUTOINSTALL='--defaultdeps'",
+		'cpan-conf' => {},
+		'cpan-install' => [
+			"yes | __CPAN_AUTOINSTALL__ perl -MCPAN -e 'install DBD::SQLite'",
+			"__CPAN_AUTOINSTALL__ perl -MCPAN -e 'install common::sense'",
+			"__CPAN_AUTOINSTALL__ perl -MCPAN -e 'install Linux::Inotify2'",
+		],
+		'pkg-repo-error' => 'insert the disk|404 not found|failed to fetch|could not resolve|unable to fetch',
+		'rollback' => [],
+	},
+	'fedora' => {
+		'pkg-install' => [
+			"yum -y groupinstall 'Development Tools'",
+			"yum -y install unzip",
+			"yum -y install curl",
+			"yum -y install automake",
+			"yum -y install cronie",
+			"yum -y install perl-CPAN",
+			"yum -y install perl-DBI",
+			"yum -y install perl-DBD-SQLite",
+			"yum -y install perl-Time-HiRes",
+			"yum -y install perl-YAML",
+		],
+		'pkg-sil-append-cmd' => '',
+		'pkg-err-ignore' => 'yum groups mark|trying other mirror|no packages in any requested group|listed more than once|synchronize cache|valueerror|header v3 dsa signature|already installed|no match|no installed groups',
+		'cpan-append-cmd' => "PERL_AUTOINSTALL='--defaultdeps'",
+		'cpan-conf' => {},
+		'cpan-install' => [
+			"yes | __CPAN_AUTOINSTALL__ perl -MCPAN -e 'install Test::Simple'",
+			"__CPAN_AUTOINSTALL__ perl -MCPAN -e 'install common::sense'",
+			"__CPAN_AUTOINSTALL__ perl -MCPAN -e 'install Linux::Inotify2'",
+		],
+		'pkg-repo-error' => 'could not resolve|valid baseurl for repo|synchronize cache for repo|resolve hostname for',
+		'rollback' => [],
+	},
+	'fedoracore' => {
+		'pkg-install' => [
+			"yum -y groupinstall 'Development Tools'",
+			"yum -y install unzip",
+			"yum -y install curl",
+			"yum -y install perl-DBI",
+			"yum -y install perl-DBD-SQLite",
+			"yum -y install inotify-tools",
+			"yum -y install perl-Module-Load-Conditional",
+			"yum -y install perl-core",
+		],
+		'pkg-sil-append-cmd' => '',
+		'pkg-err-ignore' => 'yum groups mark|trying other mirror|no packages in any requested group|listed more than once|synchronize cache|valueerror|header v3 dsa signature|already installed|no match|no installed groups',
+		'cpan-append-cmd' => "PERL_AUTOINSTALL='--defaultdeps'",
+		'cpan-conf' => {
+			'lt-7' => ["__CPAN_AUTOINSTALL__ perl -MCPAN -e 'install Test::Simple' < \"__APP_PATH__/$cpanSetupPath/fedoracore/lt-7.00/cpan.conf\""],
+		},
+		'cpan-install' => [
+			"__CPAN_AUTOINSTALL__ PERL_MM_USE_DEFAULT=1 perl -MCPAN -e 'install DBI'",
+			"__CPAN_AUTOINSTALL__ perl -MCPAN -e 'install DBD::SQLite'",
+			"__CPAN_AUTOINSTALL__ perl -MCPAN -e 'install IO::Socket'",
+			"__CPAN_AUTOINSTALL__ perl -MCPAN -e 'install common::sense'",
+			"__CPAN_AUTOINSTALL__ perl -MCPAN -e 'install Linux::Inotify2'",
+		],
+		'pkg-repo-error' => 'could not resolve|valid baseurl for repo',
+		'rollback' => [],
+	},
+	'freebsd' => {
+		'pkg-install' => [
+			# "pkg install -y binutils",
+			# "pkg install -y gcc",
+			# "pkg install -y autoconf",
+			# "pkg install -y automake",
+			"pkg install -y unzip",
+			"pkg install -y curl",
+			"pkg install -y sqlite3",
+			"pkg install -y libdbi",
+			"pkg install -y p5-DBD-SQLite",
+			# "pkg install -y libyaml",
+			# "pkg install -y libcyaml",
+			# "pkg install -y p5-yaml",
+			# "pkg install -y libtool",
+			# "pkg install -y inotify-tools",
+			# "pkg install -y libinotify",
+			# "pkg install -y p5-Filesys-notify-KQueue",
+		],
+		'pkg-sil-append-cmd' => '',
+		'pkg-err-ignore' => 'no packages available',
+		'cpan-append-cmd' => "PERL_AUTOINSTALL='--defaultdeps'",
+		'cpan-conf' => {},
+		'cpan-install' => [
+			# "yes | __CPAN_AUTOINSTALL__ perl -MCPAN -e 'install Test::Simple'",
+			# "__CPAN_AUTOINSTALL__ perl -MCPAN -e 'install ExtUtils::MakeMaker'",
+			# "__CPAN_AUTOINSTALL__ perl -MCPAN -e 'install common::sense'",
+			# "__CPAN_AUTOINSTALL__ cpan -T Linux::Inotify2",
+		],
+		'pkg-repo-error' => 'could not resolve|unable to update repo|error updating repo',
+		'rollback' => [],
+	},
+	'gentoo' => {
+		'pkg-install' => [],
+		'pkg-sil-append-cmd' => '',
+		'pkg-err-ignore' => '',
+		'cpan-append-cmd' => "PERL_AUTOINSTALL='--defaultdeps'",
+		'cpan-conf' => {},
+		'cpan-install' => [
+			"yes | __CPAN_AUTOINSTALL__ perl -MCPAN -e 'install DBI'",
+			"__CPAN_AUTOINSTALL__ perl -MCPAN -e 'install DBD::SQLite'",
+			"__CPAN_AUTOINSTALL__ perl -MCPAN -e 'install common::sense'",
+			"__CPAN_AUTOINSTALL__ perl -MCPAN -e 'install Linux::Inotify2'",
+		],
+		'pkg-repo-error' => '',
+		'rollback' => [],
+	},
+	'linuxmint' => {
+		'pkg-install' => [
+			"apt-get -y install unzip",
+			"apt-get -y install curl",
+			"apt-get -y install build-essential",
+			"apt-get -y install sqlite3",
+			"apt-get -y install perl-doc",
+			"apt-get -y install libdbi-perl",
+			"apt-get -y install libdbd-sqlite3-perl",
+		],
+		'pkg-sil-append-cmd' => 'export DEBIAN_FRONTEND=noninteractive',
+		'pkg-err-ignore' => '',
+		'cpan-append-cmd' => "PERL_AUTOINSTALL='--defaultdeps'",
+		'cpan-conf' => {},
+		'cpan-install' => [
+			"yes | __CPAN_AUTOINSTALL__ perl -MCPAN -e 'install common::sense'",
+			"__CPAN_AUTOINSTALL__ perl -MCPAN -e 'install Linux::Inotify2'",
+		],
+		'pkg-repo-error' => '404 not found|failed to fetch|could not resolve|unable to fetch',
+		'rollback' => [],
+	},
+	'manjarolinux' => {
+		'pkg-install' => ["pacman --noconfirm -S unzip curl"],
+		'pkg-sil-append-cmd' => '',
+		'pkg-err-ignore' => '',
+		'cpan-append-cmd' => "PERL_AUTOINSTALL='--defaultdeps'",
+		'cpan-conf' => {},
+		'cpan-install' => [
+			"yes | __CPAN_AUTOINSTALL__ perl -MCPAN -e 'install DBI'",
+			"__CPAN_AUTOINSTALL__ perl -MCPAN -e 'install YAML'",
+			"__CPAN_AUTOINSTALL__ perl -MCPAN -e 'install Test::Simple'",
+			"__CPAN_AUTOINSTALL__ perl -MCPAN -e 'install DBD::SQLite'",
+			"__CPAN_AUTOINSTALL__ perl -MCPAN -e 'install common::sense'",
+			"__CPAN_AUTOINSTALL__ perl -MCPAN -e 'install Linux::Inotify2'",
+		],
+		'pkg-repo-error' => 'could not resolve|failed to retrieve|download library error',
+		'rollback' => [],
+	},
+	'opensuse' => {
+		'pkg-install' => [
+			"zypper --non-interactive refresh",
+			"zypper --non-interactive -t install unzip",
+			"zypper --non-interactive -t install curl",
+			"zypper --non-interactive -t install gcc",
+			"zypper --non-interactive -t install make",
+			"zypper --non-interactive -t install pattern",
+			"zypper --non-interactive -t install devel_C_C++",
+		],
+		'pkg-sil-append-cmd' => '',
+		'pkg-err-ignore' => 'no provider of',
+		'cpan-append-cmd' => "PERL_AUTOINSTALL='--defaultdeps'",
+		'cpan-conf' => {},
+		'cpan-install' => [
+			"yes | __CPAN_AUTOINSTALL__ perl -MCPAN -e 'install DBI'",
+			"__CPAN_AUTOINSTALL__ perl -MCPAN -e 'install DBD::SQLite'",
+			"__CPAN_AUTOINSTALL__ perl -MCPAN -e 'install common::sense'",
+			"__CPAN_AUTOINSTALL__ perl -MCPAN -e 'install Linux::Inotify2'",
+		],
+		'pkg-repo-error' => 'could not resolve|404 not found|does not contain the desired',
+		'rollback' => [],
+	},
+	'raspbian' => {
+		'pkg-install' => [
+			"apt-get -y install unzip",
+			"apt-get -y install curl",
+			"apt-get -y install build-essential",
+			"apt-get -y install perl-doc",
+			"apt-get -y install sqlite3",
+			"apt-get -y install libdbi-perl",
+			"apt-get -y install libdbd-sqlite3-perl",
+		],
+		'pkg-sil-append-cmd' => 'export DEBIAN_FRONTEND=noninteractive',
+		'pkg-err-ignore' => 'dpkg-preconfigure|extracting templates',
+		'cpan-append-cmd' => "PERL_AUTOINSTALL='--defaultdeps'",
+		'cpan-conf' => {},
+		'cpan-install' => [
+			"yes | __CPAN_AUTOINSTALL__ perl -MCPAN -e 'install DBD::SQLite'",
+			"__CPAN_AUTOINSTALL__ perl -MCPAN -e 'install common::sense'",
+			"__CPAN_AUTOINSTALL__ perl -MCPAN -e 'install Linux::Inotify2'",
+		],
+		'pkg-repo-error' => 'insert the disk|404 not found|failed to fetch|could not resolve|unable to fetch',
+		'rollback' => [],
+	},	
+	'ubuntu' => {
+		'pkg-install' => [
+			"apt-get -y install unzip",
+			"apt-get -y install curl",
+			"apt-get -y install build-essential",
+			"apt-get -y install sqlite3",
+			"apt-get -y install perl-doc",
+			"apt-get -y install libdbi-perl",
+			"apt-get -y install libdbd-sqlite3-perl",
+		],
+		'pkg-sil-append-cmd' => 'export DEBIAN_FRONTEND=noninteractive',
+		'pkg-err-ignore' => 'dpkg-preconfigure|extracting templates',
+		'cpan-append-cmd' => "PERL_AUTOINSTALL='--defaultdeps'",
+		'cpan-conf' => {},
+		'cpan-install' => [
+			"yes | __CPAN_AUTOINSTALL__ perl -MCPAN -e 'install common::sense'",
+			"__CPAN_AUTOINSTALL__ perl -MCPAN -e 'install Linux::Inotify2'",
+		],
+		'pkg-repo-error' => '404 not found|failed to fetch|could not resolve|unable to fetch',
+		'rollback' => [],
+	},
+);
+
+our $cmdInotifySrcComp = [
+	"perl Makefile.PL",
+	"make",
+	"make test",
+	"make install"
+];
+
+our %inotifyCompiled = (
+	'archlinux' => {
+		'gt-0.8' => {
+			'append' => {
+				"linux__inotify2.pod" => {
+					'file' => '__ARCHLIB_PATH__/perllocal.pod',
+					'verify' => 'Linux::Inotify2',
+				},
+			},
+			'copy' => {
+				"Inotify2.so" => '__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.so',
+				"Inotify2.bs" => '__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.bs',
+				"Inotify2.pm" => '__SITEPERL_ARCH_PATH__/Linux/Inotify2.pm',
+				"Linux::Inotify2.3pm" => '__MAN3_PATH__/Linux::Inotify2.3pm',
+			},
+			'create' => {
+				'__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/.packlist' => [
+					'__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.so',
+					'__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.bs',
+					'__SITEPERL_ARCH_PATH__/Linux/Inotify2.pm',
+					'__MAN3_PATH__/Linux::Inotify2.3pm'
+				],
+			},
+			'setupdir' => "$inotifyBuiltPath/manjarolinux/gt-0.8/__ARCH__/",
+		},
+	},
+	'centos' => {
+		'lt-7.00' => {
+			'append' => {
+				"linux__inotify2.pod" => {
+					'file' => '__ARCHLIB_PATH__/perllocal.pod',
+					'verify' => 'Linux::Inotify2',
+				},
+			},
+			'copy' => {
+				"Inotify2.so" => '__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.so',
+				"Inotify2.bs" => '__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.bs',
+				"Inotify2.pm" => '__SITEPERL_ARCH_PATH__/Linux/Inotify2.pm',
+				"Linux::Inotify2.3pm" => '__MAN3_PATH__/Linux::Inotify2.3pm',
+			},
+			'create' => {
+				'__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/.packlist' => [
+					'__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.so',
+					'__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.bs',
+					'__SITEPERL_ARCH_PATH__/Linux/Inotify2.pm',
+					'__MAN3_PATH__/Linux::Inotify2.3pm'
+				],
+			},
+			'setupdir' => "$inotifyBuiltPath/centos/lt-7.00/__ARCH__/",
+		},
+		'gte-7.00' => {
+			'append' => {
+				"linux__inotify2.pod" => {
+					'file' => '__ARCHLIB_PATH__/perllocal.pod',
+					'verify' => 'Linux::Inotify2',
+				},
+			},
+			'copy' => {
+				"Inotify2.so" => '__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.so',
+				"Inotify2.bs" => '__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.bs',
+				"Inotify2.pm" => '__SITEPERL_ARCH_PATH__/Linux/Inotify2.pm',
+				"Linux::Inotify2.3pm" => '__MAN3_PATH__/Linux::Inotify2.3pm',
+			},
+			'create' => {
+				'__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/.packlist' => [
+					'__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.so',
+					'__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.bs',
+					'__SITEPERL_ARCH_PATH__/Linux/Inotify2.pm',
+					'__MAN3_PATH__/Linux::Inotify2.3pm'
+				],
+			},
+			'setupdir' => "$inotifyBuiltPath/centos/gte-7.00/__ARCH__/",
+		},
+	},
+	'debian' => {
+		'lt-6.00' => {
+			'append' => {
+				"linux__inotify2.pod" => {
+					'file' => '__SITEPERL_ARCH_PATH__/perllocal.pod',
+					'verify' => 'Linux::Inotify2',
+				},
+			},
+			'copy' => {
+				"Inotify2.so" => '__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.so',
+				"Inotify2.bs" => '__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.bs',
+				"Inotify2.pm" => '__SITEPERL_ARCH_PATH__/Linux/Inotify2.pm',
+				"Linux::Inotify2.3pm" => '__MAN3_PATH__/Linux::Inotify2.3pm',
+			},
+			'create' => {
+				'__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/.packlist' => [
+					'__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.so',
+					'__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.bs',
+					'__SITEPERL_ARCH_PATH__/Linux/Inotify2.pm',
+					'__MAN3_PATH__/Linux::Inotify2.3pm'
+				],
+			},
+			'setupdir' => "$inotifyBuiltPath/debian/lt-6.00/__ARCH__/",
+		},
+		'gte-6.00' => {
+			'append' => {
+				"linux__inotify2.pod" => {
+					'file' => '__SITEPERL_ARCH_PATH__/perllocal.pod',
+					'verify' => 'Linux::Inotify2',
+				},
+			},
+			'copy' => {
+				"Inotify2.so" => '__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.so',
+				"Inotify2.bs" => '__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.bs',
+				"Inotify2.pm" => '__SITEPERL_ARCH_PATH__/Linux/Inotify2.pm',
+				"Linux::Inotify2.3pm" => '__MAN3_PATH__/Linux::Inotify2.3pm',
+			},
+			'create' => {
+				'__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/.packlist' => [
+					'__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.so',
+					'__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.bs',
+					'__SITEPERL_ARCH_PATH__/Linux/Inotify2.pm',
+					'__MAN3_PATH__/Linux::Inotify2.3pm'
+				],
+			},
+			'setupdir' => "$inotifyBuiltPath/debian/gte-6.00/__ARCH__/",
+		},
+	},
+	'fedora' => {
+		'lte-13.99' => {
+			'append' => {
+				"linux__inotify2.pod" => {
+					'file' => '__ARCHLIB_PATH__/perllocal.pod',
+					'verify' => 'Linux::Inotify2',
+				},
+			},
+			'copy' => {
+				"Inotify2.so" => '__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.so',
+				"Inotify2.bs" => '__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.bs',
+				"Inotify2.pm" => '__SITEPERL_ARCH_PATH__/Linux/Inotify2.pm',
+				"Linux::Inotify2.3pm" => '__MAN3_PATH__/Linux::Inotify2.3pm',
+			},
+			'create' => {
+				'__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/.packlist' => [
+					'__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.so',
+					'__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.bs',
+					'__SITEPERL_ARCH_PATH__/Linux/Inotify2.pm',
+					'__MAN3_PATH__/Linux::Inotify2.3pm'
+				],
+			},
+			'setupdir' => "$inotifyBuiltPath/fedora/lte-13.99/__ARCH__/",
+		},
+		'gte-14.0' => {
+			'append' => {
+				"linux__inotify2.pod" => {
+					'file' => '__ARCHLIB_PATH__/perllocal.pod',
+					'verify' => 'Linux::Inotify2',
+				},
+			},
+			'copy' => {
+				"Inotify2.so" => '__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.so',
+				"Inotify2.bs" => '__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.bs',
+				"Inotify2.pm" => '__SITEPERL_ARCH_PATH__/Linux/Inotify2.pm',
+				"Linux::Inotify2.3pm" => '__MAN3_PATH__/Linux::Inotify2.3pm',
+			},
+			'create' => {
+				'__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/.packlist' => [
+					'__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.so',
+					'__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.bs',
+					'__SITEPERL_ARCH_PATH__/Linux/Inotify2.pm',
+					'__MAN3_PATH__/Linux::Inotify2.3pm'
+				],
+			},
+			'setupdir' => "$inotifyBuiltPath/fedora/gte-14.0/__ARCH__/",
+		},
+	},
+	'fedoracore' => {
+		'lt-7.00' => {
+			'append' => {
+				"linux__inotify2.pod" => {
+					'file' => '__ARCHLIB_PATH__/perllocal.pod',
+					'verify' => 'Linux::Inotify2',
+				},
+			},
+			'copy' => {
+				"Inotify2.so" => '__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.so',
+				"Inotify2.bs" => '__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.bs',
+				"Inotify2.pm" => '__SITEPERL_ARCH_PATH__/Linux/Inotify2.pm',
+				"Linux::Inotify2.3pm" => '__MAN3_PATH__/Linux::Inotify2.3pm',
+			},
+			'create' => {
+				'__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/.packlist' => [
+					'__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.so',
+					'__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.bs',
+					'__SITEPERL_ARCH_PATH__/Linux/Inotify2.pm',
+					'__MAN3_PATH__/Linux::Inotify2.3pm'
+				],
+			},
+			'setupdir' => "$inotifyBuiltPath/fedoracore/lt-7.00/__ARCH__/",
+		},
+	},
+	# 'freebsd' => {
+		# 'gte-11.0' => {
+			# 'append' => {
+				# "linux__inotify2.pod" => {
+					# 'file' => '__ARCHLIB_PATH__/perllocal.pod',
+					# 'verify' => 'Linux::Inotify2',
+				# },
+			# },
+			# 'copy' => {
+				# "Inotify2.so" => '__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.so',
+				# "Inotify2.pm" => '__SITEPERL_ARCH_PATH__/Linux/Inotify2.pm',
+				# "Linux::Inotify2.3pm" => '__MAN3_PATH__/Linux::Inotify2.3pm',
+				# "Linux::Inotify2.3" => '__MAN3_SITE__/Linux::Inotify2.3',
+			# },
+			# 'create' => {
+				# '__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/.packlist' => [
+					# '__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.so',
+					# '__SITEPERL_ARCH_PATH__/Linux/Inotify2.pm',
+					# '__MAN3_SITE__/Linux::Inotify2.3pm'
+				# ],
+			# },
+			# 'setupdir' => "$inotifyBuiltPath/freebsd/gte-11.0/__ARCH__/",
+		# },
+	# },
+	'gentoo' => {
+		'gte-1.0' => {
+			'append' => {
+				"linux__inotify2.pod" => {
+					'file' => '__ARCHLIB_PATH__/perllocal.pod',
+					'verify' => 'Linux::Inotify2',
+				},
+			},
+			'copy' => {
+				"Inotify2.so" => '__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.so',
+				"Inotify2.bs" => '__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.bs',
+				"Inotify2.pm" => '__SITEPERL_ARCH_PATH__/Linux/Inotify2.pm',
+				"Linux::Inotify2.3pm" => '__MAN3_SITE__/Linux::Inotify2.3pm',
+			},
+			'create' => {
+				'__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/.packlist' => [
+					'__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.so',
+					'__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.bs',
+					'__SITEPERL_ARCH_PATH__/Linux/Inotify2.pm',
+					'__MAN3_SITE__/Linux::Inotify2.3pm'
+				],
+			},
+			'setupdir' => "$inotifyBuiltPath/gentoo/gte-1.0/__ARCH__/",
+		},
+	},
+	'linuxmint' => {
+		'gte-5.0' => {
+			'append' => {
+				"linux__inotify2.pod" => {
+					'file' => '__SITEPERL_ARCH_PATH__/perllocal.pod',
+					'verify' => 'Linux::Inotify2',
+				},
+			},
+			'copy' => {
+				"Inotify2.so" => '__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.so',
+				"Inotify2.bs" => '__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.bs',
+				"Inotify2.pm" => '__SITEPERL_ARCH_PATH__/Linux/Inotify2.pm',
+				"Linux::Inotify2.3pm" => '__MAN3_SITE__/Linux::Inotify2.3pm',
+			},
+			'create' => {
+				'__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/.packlist' => [
+					'__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.so',
+					'__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.bs',
+					'__SITEPERL_ARCH_PATH__/Linux/Inotify2.pm',
+					'__MAN3_SITE__/Linux::Inotify2.3pm'
+				],
+			},
+			'setupdir' => "$inotifyBuiltPath/linuxmint/gte-5.0/__ARCH__/",
+		},
+	},
+	'manjarolinux' => {
+		'gt-0.8' => {
+			'append' => {
+				"linux__inotify2.pod" => {
+					'file' => '__ARCHLIB_PATH__/perllocal.pod',
+					'verify' => 'Linux::Inotify2',
+				},
+			},
+			'copy' => {
+				"Inotify2.so" => '__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.so',
+				"Inotify2.bs" => '__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.bs',
+				"Inotify2.pm" => '__SITEPERL_ARCH_PATH__/Linux/Inotify2.pm',
+				"Linux::Inotify2.3pm" => '__MAN3_PATH__/Linux::Inotify2.3pm',
+			},
+			'create' => {
+				'__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/.packlist' => [
+					'__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.so',
+					'__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.bs',
+					'__SITEPERL_ARCH_PATH__/Linux/Inotify2.pm',
+					'__MAN3_PATH__/Linux::Inotify2.3pm'
+				],
+			},
+			'setupdir' => "$inotifyBuiltPath/manjarolinux/gt-0.8/__ARCH__/",
+		},
+	},
+	'opensuse' => {
+		'lte-14.99' => {
+			'append' => {
+				"linux__inotify2.pod" => {
+					'file' => '__ARCHLIB_PATH__/perllocal.pod',
+					'verify' => 'Linux::Inotify2',
+				},
+			},
+			'copy' => {
+				"Inotify2.so" => '__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.so',
+				"Inotify2.bs" => '__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.bs',
+				"Inotify2.pm" => '__SITEPERL_ARCH_PATH__/Linux/Inotify2.pm',
+				"Linux::Inotify2.3pm" => '__MAN3_PATH__/Linux::Inotify2.3pm',
+			},
+			'create' => {
+				'__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/.packlist' => [
+					'__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.so',
+					'__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.bs',
+					'__SITEPERL_ARCH_PATH__/Linux/Inotify2.pm',
+					'__MAN3_PATH__/Linux::Inotify2.3pm'
+				],
+			},
+			'setupdir' => "$inotifyBuiltPath/opensuse/lte-14.99/__ARCH__/",
+		},
+		'gte-15.0' => {
+			'append' => {
+				"linux__inotify2.pod" => {
+					'file' => '__ARCHLIB_PATH__/perllocal.pod',
+					'verify' => 'Linux::Inotify2',
+				},
+			},
+			'copy' => {
+				"Inotify2.so" => '__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.so',
+				"Inotify2.bs" => '__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.bs',
+				"Inotify2.pm" => '__SITEPERL_ARCH_PATH__/Linux/Inotify2.pm',
+				"Linux::Inotify2.3pm" => '__MAN3_PATH__/Linux::Inotify2.3pm',
+			},
+			'create' => {
+				'__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/.packlist' => [
+					'__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.so',
+					'__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.bs',
+					'__SITEPERL_ARCH_PATH__/Linux/Inotify2.pm',
+					'__MAN3_PATH__/Linux::Inotify2.3pm'
+				],
+			},
+			'setupdir' => "$inotifyBuiltPath/opensuse/gte-15.0/__ARCH__/",
+		},
+	},
+	'raspbian' => {
+		'gte-1.00' => {
+			'append' => {
+				"linux__inotify2.pod" => {
+					'file' => '__SITEPERL_ARCH_PATH__/perllocal.pod',
+					'verify' => 'Linux::Inotify2',
+				},
+			},
+			'copy' => {
+				"Inotify2.so" => '__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.so',
+				"Inotify2.bs" => '__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.bs',
+				"Inotify2.pm" => '__SITEPERL_ARCH_PATH__/Linux/Inotify2.pm',
+				"Linux::Inotify2.3pm" => '__MAN3_PATH__/Linux::Inotify2.3pm',
+			},
+			'create' => {
+				'__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/.packlist' => [
+					'__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.so',
+					'__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.bs',
+					'__SITEPERL_ARCH_PATH__/Linux/Inotify2.pm',
+					'__MAN3_PATH__/Linux::Inotify2.3pm'
+				],
+			},
+			'setupdir' => "$inotifyBuiltPath/debian/gte-6.00/__ARCH__/",
+		},
+	},
+	'ubuntu' => {
+		'lt-10.00' => {
+			'append' => {
+				"linux__inotify2.pod" => {
+					'file' => '__SITEPERL_ARCH_PATH__/perllocal.pod',
+					'verify' => 'Linux::Inotify2',
+				},
+			},
+			'copy' => {
+				"Inotify2.so" => '__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.so',
+				"Inotify2.bs" => '__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.bs',
+				"Inotify2.pm" => '__SITEPERL_ARCH_PATH__/Linux/Inotify2.pm',
+				"Linux::Inotify2.3pm" => '__MAN3_PATH__/Linux::Inotify2.3pm',
+			},
+			'create' => {
+				'__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/.packlist' => [
+					'__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.so',
+					'__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.bs',
+					'__SITEPERL_ARCH_PATH__/Linux/Inotify2.pm',
+					'__MAN3_PATH__/Linux::Inotify2.3pm'
+				],
+			},
+			'setupdir' => "$inotifyBuiltPath/ubuntu/lt-10.00/__ARCH__/",
+		},
+		'gte-10.00' => {
+			'append' => {
+				"linux__inotify2.pod" => {
+					'file' => '__SITEPERL_ARCH_PATH__/perllocal.pod',
+					'verify' => 'Linux::Inotify2',
+				},
+			},
+			'copy' => {
+				"Inotify2.so" => '__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.so',
+				"Inotify2.bs" => '__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.bs',
+				"Inotify2.pm" => '__SITEPERL_ARCH_PATH__/Linux/Inotify2.pm',
+				"Linux::Inotify2.3pm" => '__MAN3_PATH__/Linux::Inotify2.3pm',
+			},
+			'create' => {
+				'__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/.packlist' => [
+					'__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.so',
+					'__SITEPERL_ARCH_PATH__/auto/Linux/Inotify2/Inotify2.bs',
+					'__SITEPERL_ARCH_PATH__/Linux/Inotify2.pm',
+					'__MAN3_PATH__/Linux::Inotify2.3pm'
+				],
+			},
+			'setupdir' => "$inotifyBuiltPath/ubuntu/gte-10.00/__ARCH__/",
 		},
 	},
 );
 
 our %idriveScripts = (
-	'account_settings'            => 'account_setting.pl',
-	'archive_cleanup'             => 'archive_cleanup.pl',
-	'backup_scripts'              => 'Backup_Script.pl',
-	'check_for_update'            => 'check_for_update.pl',
-	'appconfig'                   => 'AppConfig.pm',
-	'constants'                   => 'Constants.pm',
-	'cron'                        => 'cron.pl',
-	'dashboard'                   => 'dashboard.pl',
-	'edit_supported_files'        => 'edit_supported_files.pl',
-	'express_backup'              => 'express_backup.pl',
-	'header'                      => 'Header.pl',
-	'common'                      => 'Common.pm',
-	'ixhash'                      => 'IxHash.pm',
-	'installcron'                 => 'installcron.pl',
-	'job_termination'             => 'job_termination.pl',
-	'json'                        => 'JSON.pm',
-	'login'                       => 'login.pl',
-	'logout'                      => 'logout.pl',
-	'operations'                  => 'Operations.pl',
-	'utility'                     => 'utility.pl',
-	'readme'                      => 'readme.txt',
-	'relinkcron'                  => 'relinkcron.pl',
-	'restore_script'              => 'Restore_Script.pl',
-	'restore_version'             => 'restore_version.pl',
-	'scheduler_script'            => 'Scheduler_Script.pl',
-	'send_error_report'           => 'send_error_report.pl',
-	'status_retrieval_script'     => 'Status_Retrieval_Script.pl',
-	'strings'                     => 'Strings.pm',
-	'uninstallcron'               => 'uninstallcron.pl',
-	'uninstall_script'            => 'Uninstall_Script.pl',
-	'view_log'                    => 'logs.pl',
-	'post_update'                 => 'post_update.pl',
-	'deprecated_account_settings' => 'Account_Setting.pl',
-	'deprecated_check_for_update' => 'Check_For_Update.pl',
-	'deprecated_edit_suppor_files'=> 'Edit_Supported_Files.pl',
-	'deprecated_login'            => 'Login.pl',
-	'deprecated_restore_version'  => 'Restore_Version.pl',
-	'deprecated_view_log'         => 'View_Log.pl',
-	'deprecated_logout'           => 'Logout.pl',
+	'account_settings'				=> 'account_setting.pl',
+	'archive_cleanup'				=> 'archive_cleanup.pl',
+	'backup_scripts'				=> 'Backup_Script.pl',
+	'check_for_update'				=> 'check_for_update.pl',
+	'appconfig'						=> 'AppConfig.pm',
+	'configuration'					=> 'Configuration.pm',
+	'constants'						=> 'Constants.pm',
+	'cron'							=> 'cron.pl',
+	'cdp_client'					=> 'cdp_client.pl',
+	'cdp_server'					=> 'cdp_server.pl',
+	'dashboard'						=> 'dashboard.pl',
+	'edit_supported_files'			=> 'edit_supported_files.pl',
+	'local_backup'				    => 'local_backup.pl',
+	'local_restore'				    => 'local_restore.pl',
+	'header'						=> 'Header.pl',
+	'common'						=> 'Common.pm',
+	'helpers'						=> 'Helpers.pm',
+	'ixhash'						=> 'IxHash.pm',
+	'installcron'					=> 'installcron.pl',
+	'job_termination'				=> 'job_termination.pl',
+	'json'							=> 'JSON.pm',
+	'login'							=> 'login.pl',
+	'logout'						=> 'logout.pl',
+	'operations'					=> 'Operations.pl',
+	'utility'						=> 'utility.pl',
+	'readme'						=> 'readme.txt',
+	'restore_script'				=> 'Restore_Script.pl',
+	'restore_version'				=> 'restore_version.pl',
+	'scheduler_script'				=> 'scheduler.pl',
+	'send_error_report'				=> 'send_error_report.pl',
+	'status_retrieval'      		=> 'status_retrieval.pl',
+	'strings'						=> 'Strings.pm',
+	'uninstallcron'					=> 'uninstallcron.pl',
+	'uninstall_script'				=> 'Uninstall_Script.pl',
+	'view_log'                      => 'logs.pl',
+	'deprecated_account_settings'	=> 'Account_Setting.pl',
+	'deprecated_check_for_update'	=> 'Check_For_Update.pl',
+	'deprecated_edit_suppor_files'	=> 'Edit_Supported_Files.pl',
+	'deprecated_login'				=> 'Login.pl',
+	'deprecated_restore_version'	=> 'Restore_Version.pl',
+	'deprecated_view_log'			=> 'View_Log.pl',
+	'deprecated_logout'				=> 'Logout.pl',
+	'deprecated_relinkcron'			=> 'relinkcron.pl',
 	'deprecated_strings'          => 'Strings.pm',
 	'deprecated_configuration'    => 'Configuration.pm',
-	'deprecated_helpers'          => 'Helpers.pm',
 	'deprecated_viewlog'          => 'view_log.pl',
+	'deprecated_helpers'          => 'Helpers.pm',
+	'deprecated_scheduler_script' => 'Scheduler_Script.pl',
+	'deprecated_status_retrieval' => 'Status_Retrieval_Script.pl',
+	'deprecated_dashboard'        => 'dashboard.pl',
+    'deprecated_express_backup'	  => 'express_backup.pl',
 );
 
 our %evsOperations = (
@@ -1236,7 +2290,8 @@ our %evsOperations = (
 	'VersionOp'          => 'Version',
 	'VerifyPvtOp'        => 'VerifyPvtKey',
 	'validatePvtKeyOp'   => 'validatePvtKey',
-	'LocalBackupOp'      => 'LocalBackup'
+	'LocalBackupOp'      => 'LocalBackup',
+	'LocalRestoreOp' 	 => 'LocalRestore',
 );
 
 my %evsParameters = (
@@ -1302,13 +2357,46 @@ our @errorArgumentsExit = (
 	"No route to host",
 	"Connection refused",
 	#"failed to connect",
-	"Connection timed out",
 	"Invalid device id",
 	"not enough free space on device",
 	"Unable to proceed as device is deleted/removed",
 );
 
-our %statusHash = (
+our @errorArgumentsRetry = (
+   "Connection timed out",
+   "io timeout",
+   "Operation timed out",
+   "nodename nor servname provided, or not known",
+   "Name or service not known",
+   "failed to connect",
+   "Connection reset",
+   "connection unexpectedly closed",
+   "user information not found",
+   "failed to get the host name",
+   "unauthorized user",
+);
+
+our @errorListForMinimalRetry = (
+	'Connection refused',
+	'failed verification -- update retained',
+	'unauthorized user',
+	'user information not found',
+	'Name or service not known',
+);
+
+our @errorLogoutArgs = (
+	'encryption verification failed',
+	'account is under maintenance',
+	'account has been cancelled',
+	'account has been expired',
+	'account has been blocked',
+	'password mismatch',
+	'failed to get the device information',
+	'invalid device id',
+	'unable to proceed as device is deleted/removed',
+);
+
+our %statusHash = 	(
 	COUNT_FILES_INDEX => 0,
 	SYNC_COUNT_FILES_INDEX => 0,
 	ERROR_COUNT_FILES => 0,
@@ -1318,6 +2406,7 @@ our %statusHash = (
 	DENIED_COUNT_FILES => 0,
 	MISSED_FILES_COUNT => 0,
 	FAILED_COUNT_FILES_INDEX => 0,
+    MODIFIED_FILES_COUNT => 0,
 );
 
 our %errorDetails = (

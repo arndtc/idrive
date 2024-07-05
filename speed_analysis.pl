@@ -74,15 +74,17 @@ sub init {
 		Common::display(["\n\n",$evsResult], 1);
 	}
 
-	Common::display(["\n", 'do_you_want_to_send_speed_analysis_report_to_idrive_team', "\n"], 0);
-	my $askEmailChoice = Common::getAndValidate(['enter_your_choice'], "YN_choice", 1);
+	if($ticketID) {
+		Common::display(["\n", 'do_you_want_to_send_speed_analysis_report_to_idrive_team', "\n"], 0);
+		my $askEmailChoice = Common::getAndValidate(['enter_your_choice'], "YN_choice", 1);
 
-	if(lc($askEmailChoice) eq 'y'){
-		my $userEmail = getReportUserEmails();
-		sendReportMail($ticketID,$evsResult,$userEmail);
-	}
-	else{
-		Common::display(["\n", 'aborting_the_operation', "\n"], 1);
+		if(lc($askEmailChoice) eq 'y'){
+			my $userEmail = getReportUserEmails();
+			sendReportMail($ticketID,$evsResult,$userEmail);
+		}
+		else{
+			Common::display(["\n", 'aborting_the_operation', "\n"], 1);
+		}
 	}
 
 	unlink($testFile);
@@ -214,10 +216,11 @@ sub generateFileForBackup {
 # Subroutine			: getUserTicketID
 # Objective				: Get user's Ticket ID
 # Added By				: Senthil Pandian
+# Modified By			: Sabin Cheruvattil
 #********************************************************************************
 sub getUserTicketID {
-	my $returnUserTicket = Common::getAndValidate(['Enter the ticket number:', " "], "ticket_no", 1, $AppConfig::inputMandetory);
-	return $returnUserTicket;
+	my $ticketno = Common::getAndValidate(['ticket_number_if_any', ' ', '_optional_', ': '], 'ticket_no', 1, 0);
+	return $ticketno;
 }
 
 #*****************************************************************************************************
@@ -285,15 +288,14 @@ sub speedTestViaEVS {
 			$reportMsg .= "Backup Error:\n============\n";
 			$reportMsg .= "\t$buffer\n\n";
         }
-	}
-
-	$reportMsg .= "Speed test result from IDrive:\n============================\n";
-	my $time = $backupEndTimeSec - $backupStartTimeSec;
-	my $size = 10485760/1048576;
-	my $res = ($size/$time)*8;
-	$res = substr($res,0,4);
-	$reportMsg .= "\tUpload: ".$res." Mbit/s\n\n";
-
+	} else {
+        $reportMsg .= "Speed test result from IDrive:\n============================\n";
+        my $time = $backupEndTimeSec - $backupStartTimeSec;
+        my $size = 10485760/1048576;
+        my $res = ($size/$time)*8;
+        $res = substr($res,0,4);
+        $reportMsg .= "\tUpload: ".$res." Mbit/s\n\n";
+    }
 	unlink($evsErrorFile);
 	unlink($evsOutputFile);
 	return $reportMsg;
@@ -362,6 +364,7 @@ sub cancelProcess {
 # Subroutine			: sendReportMail
 # Objective				: Send report email to IDrive support team
 # Added By				: Senthil Pandian
+# Modified By     : Yogesh Kumar
 #****************************************************************************************************/
 sub sendReportMail {
 	my $reportUserTicket = $_[0];
@@ -369,23 +372,18 @@ sub sendReportMail {
 	my $reportUserEmail  = $_[2];
 	my $reportSubject 	 = qq($AppConfig::appType ).Common::getStringConstant('for_linux_user_feed');
 	   $reportSubject 	.= qq( [#$reportUserTicket]) if($reportUserTicket ne '');
-	my $reportEmailCont	 = qq(Email=) . Common::urlEncode($AppConfig::IDriveSupportEmail) . qq(&subject=) . Common::urlEncode($reportSubject);
-	$reportEmailCont	.= qq(&content=).Common::urlEncode($reportContents).qq(&user_email=).Common::urlEncode($reportUserEmail);
-
-	my %params = (
-		'host'   => $AppConfig::IDriveErrorCGI,
-		'method' => 'GET',
-		'encDATA' => $reportEmailCont,
-	);
-
-	#my $response = Common::request(\%params);
-	my $response = Common::requestViaUtility(\%params);
+	my $response = Common::makeRequest(3, [
+									$AppConfig::IDriveSupportEmail,
+									$reportSubject,
+									$reportContents,
+									$reportUserEmail
+								], 2);
 	unless($response || $response->{STATUS} eq 'SUCCESS') {
 		Common::retreat('failed_to_report_error');
 		return;
 	}
 
-	Common::display(["\n", 'successfully_reported_error', '.', "\n"]);
+	Common::display(["\n", 'successfully_sent_speed_analysis', '.', "\n"]);
 }
 #*****************************************************************************************************
 # Subroutine			: getReportUserEmails
@@ -418,35 +416,51 @@ sub getReportUserEmails {
 # Subroutine			: speedTestViaSpeedtestnet
 # Objective				: This subroutine helps to collect the speed test result from the external python binary
 # Added By				: Anil Kumar
-# Modified By			: Sabin Cheruvattil
+# Modified By			: Sabin Cheruvattil, Yogesh Kumar, Senthil Pandian
 #****************************************************************************************************/
 sub speedTestViaSpeedtestnet {
-	my $pythonbinCmd = Common::updateLocaleCmd('which python');
+	my $pythonbinCmd = Common::updateLocaleCmd('which python 2>/dev/null');
 	my $pythonbin = `$pythonbinCmd`;
 	Common::Chomp(\$pythonbin);
-	unless($pythonbin) {
-		Common::display(["\n",'python_not_found_no_speedtest'], 1);
-		return "Python not found. Unable to get speedtest.net result.";
-	}
-
-	Common::display(["\n",'checking_network_speed_via_speedtestnet'], 1);
-	my $proxy = "";
-	my $proxyStr =  Common::getUserConfiguration('PROXY');
-	if($proxyStr){
-		my ($uNPword, $ipPort) = split(/\@/, $proxyStr);
-		my @UnP = split(/\:/, $uNPword);
-		if(scalar(@UnP) >1 and $UnP[0] ne "") {
-			$UnP[1] = ($UnP[1] ne '')? Common::decryptString($UnP[1]):$UnP[1];
-			foreach ($UnP[0], $UnP[1]) {
-				$_ =~ s/([^A-Za-z0-9])/sprintf("%%%02X", ord($1))/seg;
+	my $cmdtoGetSpeedInfo = '';
+	if ($pythonbin) {
+		Common::display(["\n",'checking_network_speed_via_speedtestnet'], 1);
+		my $proxy = '';
+		if (Common::getProxyStatus() and Common::getProxyDetails('PROXYIP')) {
+			$proxy = '-x http://';
+			$proxy .= Common::getProxyDetails('PROXYIP');
+	
+			if (Common::getProxyDetails('PROXYPORT')) {
+				$proxy .= (':' . Common::getProxyDetails('PROXYPORT'))
 			}
-			$uNPword = join ":", @UnP;
-			$proxyStr = "http://$uNPword\@$ipPort";
+			if (Common::getProxyDetails('PROXYUSERNAME')) {
+				my $pu = Common::getProxyDetails('PROXYUSERNAME');
+				foreach ($pu) {
+					$_ =~ s/([^A-Za-z0-9])/sprintf("%%%02X", ord($1))/seg;
+				}
+				$proxy .= (' --proxy-user ' . $pu);
+	
+				if (Common::getProxyDetails('PROXYPASSWORD')) {
+					my $ppwd = Common::getProxyDetails('PROXYPASSWORD');
+					$ppwd = ($ppwd ne '')?Common::decryptString($ppwd):$ppwd;
+					foreach ($ppwd) {
+						$_ =~ s/([^A-Za-z0-9])/sprintf("%%%02X", ord($1))/seg;
+					}
+					$proxy .= (':' . $ppwd);
+				}
+			}
 		}
-		$proxy = "--proxy $proxyStr";
+
+		my $cmdtoGetSpeedInfoCmd = Common::updateLocaleCmd('curl -sk $proxy https://raw.githubusercontent.com/sivel/speedtest-cli/master/speedtest.py | python -');
+		$cmdtoGetSpeedInfo = `$cmdtoGetSpeedInfoCmd`;
+	}
+	else {
+		# Common::display(["\n",'checking_network_speed_via_speedtestnet'], 1);
+		# $cmdtoGetSpeedInfo = Common::makeRequest('--speedtest');
+        #Modified for Yuvaraj_2.32_13_1: Senthil
+		Common::display(["\n",'python_not_found_no_speedtest'], 1);
+		return "Python not found. Unable to get speedtest.net result.\n";
 	}
 
-	my $cmdtoGetSpeedInfoCmd = Common::updateLocaleCmd('curl -sk $proxy https://raw.githubusercontent.com/sivel/speedtest-cli/master/speedtest.py | python -');
-	my $cmdtoGetSpeedInfo = `$cmdtoGetSpeedInfoCmd`;
 	return $cmdtoGetSpeedInfo;
 }

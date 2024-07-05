@@ -3,7 +3,8 @@
 
 I. INTRODUCTION
 ================
-Backup and protect your Linux machine data using scripts bundle provided by IDrive. Protect files during transfer and storage, using 256-bit AES encryption with an optional private key.
+Backup and protect the data on your Linux machines using the scripts bundle provided by IDrive. Protect files
+during transfer and storage, using 256-bit AES encryption with an optional private key.
 
 II. SYSTEM/SOFTWARE REQUIREMENTS
 =================================
@@ -12,9 +13,9 @@ Perl v5.8 or later
 
 III. SCRIPT DOWNLOAD
 =====================
-STEP 1: Download the script bundle from "https://www.idrivedownloads.com/downloads/linux/download-for-linux/IDriveForLinux.zip".
-		Downloaded script bundle needs to be extracted into a particular folder on your Linux machine.
-		After extraction of the zip archive, you will find scripts folder in it. Below files will be present in the scripts folder:
+STEP 1: Download the scripts bundle from "https://www.idrivedownloads.com/downloads/linux/download-for-linux/LinuxScripts/IDriveForLinux.zip".
+		Downloaded scripts bundle needs to be extracted into a particular folder on your Linux machine.
+		After extraction of the zip archive, you will find the scripts folder in it. Below files will be present in the scripts folder:
 
 		Executable Script files:
 		1. account_setting.pl
@@ -22,33 +23,35 @@ STEP 1: Download the script bundle from "https://www.idrivedownloads.com/downloa
 		3. Backup_Script.pl
 		4. check_for_update.pl
 		5. edit_supported_files.pl
-		6. express_backup.pl
-		7. help.pl
-		8. job_termination.pl
-		9. login.pl
-		10. logout.pl
-		11. logs.pl
-		12. Restore_Script.pl
-		13. restore_version.pl
-		14. scheduler.pl
-		15. send_error_report.pl
-		16. speed_analysis.pl
-		17. Status_Retrieval_Script.pl
-		18. Uninstall_Script.pl
+		6. local_backup.pl
+		7. local_restore.pl
+		8. help.pl
+		9. job_termination.pl
+		10. login.pl
+		11. logout.pl
+		12. logs.pl
+		13. Restore_Script.pl
+		14. restore_version.pl
+		15. scheduler.pl
+		16. send_error_report.pl
+		17. speed_analysis.pl
+		18. status_retrieval.pl
+		19. Uninstall_Script.pl
 
 		Other Supported files:
 		1. ca-certificates.crt
-		2. Constants.pm
-		3. cron.pl
-		4. dashboard.pl
-		5. Header.pl
-		6. Operations.pl
-		7. readme.txt
-		8. utility.pl
+		2. cdp_client.pl
+		3. cdp_server.pl
+		4. Constants.pm
+		5. cron.pl
+		6. Header.pl
+		7. Operations.pl
+		8. readme.txt
+		9. utility.pl
 
 		Other Supported Folders:
 		1. Idrivelib - Contains cron startup routine files for all supported platforms and required perl modules.
-		
+
 		Other Supported files/folders are used internally by executable script files and users must not try to execute these scripts for any reason.
 
 STEP 2: Provide appropriate permissions (executable permission) to the scripts.
@@ -56,21 +59,24 @@ STEP 2: Provide appropriate permissions (executable permission) to the scripts.
 
 IV. SETUP YOUR IDRIVE ACCOUNT
 ==============================
-STEP 1: You need to have an IDrive account to use the script bundle to backup your files. In case you do not have an account,
-		please sign up and create an account at https://www.idrive.com/idrive/signup .
+STEP 1: You need to have an IDrive account to use the scripts bundle for performing backup of your files. In case you do not have an account, sign up and create an account at https://www.idrive.com/idrive/signup.
 
-STEP 2: To set up IDrive script bundle locally with your IDrive account, run the below command and follow the instructions.
+STEP 2: To set up the IDrive scripts bundle locally with your IDrive account, run the below command and follow the instructions.
 		$./account_setting.pl
-		Note: Setting up the script bundle for the first time will ask user to enter the service path. This path will contain user specific data required to perform operations via script bundle.
-		      For some IDrive accounts, while configuring account, 'Create new Backup Location'/'Select from existing Backup Locations' options will appear and Mirror/relative backup type option will not appear.
+
+		You may be prompted to install the required Linux packages on your Operating System. In order to deliver faster sync, backup and continuous data protection, some of these packages are required.
+
+		Note: On setting up the script bundle for the first time, users will be asked to enter the service path. This path will contain user specific data required to perform operations via script bundle.
+
+		Note: For some IDrive accounts, while configuring the account, 'Create New Backup Location'/'Select from existing Backup Locations' option will appear and 'Mirror'/'Relative' backup type option will not appear.
 
 V. WORKING WITH THE SCRIPTS
 ============================
 		Using IDrive scripts, you can:
 
-		- Perform backup/express backup/restore/archive cleanup operations
-		- View progress for backup/express backup/restore/archive cleanup 
-		- Schedule backup/express backup/restore/archive cleanup job
+		- Perform backup/express backup/continuous data protection/restore/archive cleanup operations
+		- View progress for backup/express backup/continuous data protection/restore/archive cleanup
+		- Schedule backup/express backup/continuous data protection/restore/archive cleanup job
 		- View logs files and much more.
 
 STEP 1: Login to your IDrive account
@@ -79,14 +85,16 @@ STEP 1: Login to your IDrive account
 
 		Note: Login script is a mandatory script to be executed before performing any operation. This script will authenticate your IDrive account details and will create a secure session for your backups.
 
-STEP 2: Edit your backup-set/express backup-set/restore-set, and exclude files
-		Before starting any backup/express backup/restore operation, the user must add the list of files/folders required for each operation in the backup/express backup/restore set file.
+STEP 2: Edit your backup set/local backup set/restore set and exclude files
+		Before starting any backup/local backup/restore operation, you must add the list of files/folders required for each operation in the backup/local backup/restore set file.
 
-		To update these details in the backup/express backup/restore set file, you must execute the below command:
+		To update these details in the backup/local backup/restore set file, you must execute the below command:
 		$./edit_supported_files.pl
 
-		The menu option will be displayed. Select option 1 to edit the backup set file. Respective file will open in selected editor to edit. Add the files/folders that needs to be backed up.
-		Using same script you can update backup set, express backup set, restore set and exclude files by selecting the desired option.
+		The menu option will be displayed. Select option 1 to edit the backup set file. Respective file will open in the selected editor to edit. Add the files/folders that needs to be backed up.
+		Using the same script you can update backup set, local backup set, restore set and exclude files by selecting the desired option.
+
+		Note: Continuous Data Protection and Archive Cleanup considers backup set for performing operations.
 
 		Exclude Files/Folder from your backup set
 		=========================================
@@ -100,120 +108,137 @@ STEP 2: Edit your backup-set/express backup-set/restore-set, and exclude files
 		=================
 		To exclude files/folders with full path,
 
-		1. Run 'edit_supported_files.pl' script and select option 'Edit Your Full Path Exclude List'. The 'FullExcludeList.txt' file will open in selected editor.
-		2. Add full path of the files/folders that you wish to exclude.
+		1. Run 'edit_supported_files.pl' script and select option 'Edit Your Full Path Exclude List'. The 'FullExcludeList.txt' file will open in the selected editor.
+		2. Add the full path of the files/folders that you wish to exclude.
 		3. Enter each item in a new line.
 		4. Save and exit.
 
 		Example:
-		Your Backupset contains /home/Documents and if you want to exclude /home/Documents/temp, enter the folder path ie: ‘/home/Documents/temp’ in FullExcludeList file.
+		Example: Your backup set contains "/home/Documents" and if you want to exclude "/home/Documents/temp", enter the folder path ie: "/home/Documents/temp" in FullExcludeList file.
 
 		Partial Path Exclude
 		====================
 		To exclude files/folders with partial path,
 
-		1. Run 'edit_supported_files.pl' script and select option 'Edit Your Partial Path Exclude List'. The 'PartialExcludeList.txt' file will open in selected editor.
-		2. Add partial name of the files/folders that you wish to exclude.
+		1. Run 'edit_supported_files.pl' script and select option 'Edit Your Partial Path Exclude List'. The 'PartialExcludeList.txt' file will open in the selected editor.
+		2. Add the partial name of the files/folders that you wish to exclude.
 		3. Enter each item in a new line.
 		4. Save and exit.
 
 		Example:
-		Your Backupset contains /home/Documents and if you want to exclude all the pst files from this folder like /home/Documents/designtutorials.pst, /home/Documents/new.pst, /home/Documents/James/tutorials.pst etc, then enter ‘pst’ in PartialExcludeList file.
+		Your Backup set contains /home/Documents and if you want to exclude all the pst files from this folder like /home/Documents/designtutorials.pst, /home/Documents/new.pst, /home/Documents/James/tutorials.pst etc, then enter â€˜pstâ€™ in PartialExcludeList file.
 
 		Regex Exclude
 		=============
 		To exclude files/folders based on regex pattern,
 
-		1. Run 'edit_supported_files.pl' script and select option 'Edit Your Regex Exclude List'. The 'RegexExcludeList.txt' file will open in selected editor.
+		1. Run 'edit_supported_files.pl' script and select option 'Edit Your Regex Exclude List'. The 'RegexExcludeList.txt' file will open in the selected editor.
 		2. Add the regex pattern of the files/folders that you wish to exclude.
 		3. Enter each item in a new line.
 		4. Save and exit.
 
 		Example:
-		Your Backupset contains /home/Folder01 , /home/Folder02, /home/FolderA, /home/FolderB. If you want to exclude all folders/files that contains numeric values in name ie: /home/Folder01, /home/Folder02 etc, then enter ‘Folder\d+’ in RegexExcludeList file.
+		Your Backup set contains /home/Folder01, /home/Folder02, /home/FolderA, /home/FolderB. If you want to exclude all folders/files that contains numeric values in name ie: /home/Folder01, /home/Folder02 etc, then enter â€˜Folder\d+â€™ in RegexExcludeList file.
 
 STEP 3: Immediate/Manual backup
 		You can perform immediate/manual backup using the below command:
 		$./Backup_Script.pl
 
-		When you run your backup script, it will reconfirm your backup location and allow you to change it. You can now view the graphical progress bar for your data getting backed up.
+		When you run your backup script, it will reconfirm your backup location and allow you to change it. You can view the graphical progress bar for your data getting backed up. If you want to view the detailed progress bar press '+' and to collapse press '-'. You can pause your backup by pressing 'p' and 'r' to resume the backup.
+
 		If you want your script not to ask for backup location and not to display progress bar then you can always use "--silent" flag with this command.
 
 		Note: For some IDrive accounts this script will not provide an option to change 'Backup location'.
 
+STEP 4: Immediate/Manual local backup
+		You can perform immediate/manual local backup using the below command:
+		$./local_backup.pl
 
-STEP 4: Immediate/Manual express backup
-		You can perform immediate/manual express backup using the below command:
-		$./express_backup.pl
+		Using this script, you can backup your Linux machine data to the express device shipped to you. You can view the graphical progress bar for your data getting backed up. If you want to view the detailed progress bar press '+' and to collapse press '-'. You can pause your backup by pressing 'p' and 'r' to resume the backup.
 
-		Using this script, you can backup your Linux machine data to the express device shipped to you. Once the data is backed up, you can ship this express device back to us and within a week your data will be available in your IDrive account.
+		Once the data is backed up, you can ship this express device back to us and within a week your data will be available in your IDrive account.
+
 		For more details on express, visit https://www.idrive.com/linux-express-backup
+
+		Note: Current "Backup location" will be considered for local backup too.
 
 STEP 5:	Immediate/Manual restore
 		You can perform immediate/manual restore using the below command:
 		$./Restore_Script.pl
 
 		When you run your restore script, it will reconfirm your restore and restore from location and will allow you to change it if required.
-		You can now view the graphical progress bar for your data getting restored.
-		If you want your script not to ask for restore location, restore from location and not to display progress bar then you can always use "--silent" flag with this command.
 
-		Note: For some IDrive accounts, user will not be able to edit 'Restore From' manually and have to select 'Restore From' location from the list of existing locations.
+		You can view the graphical progress bar for your data getting restored. If you want to view the detailed progress bar press '+' and to collapse press '-'. You can pause your restore by pressing 'p' and 'r' to resume the restore.
 
-STEP 6:	Schedule backup/express backup/archive cleanup job
-		Run the below command to manage your schedule backup/express backup/archive cleanup job:
+		If you want your script to not ask for the â€˜toâ€™ and â€˜fromâ€™ restore location, or to display the progress bars, then you can always use the "--silent" flag with this command.
+
+		Note: For some IDrive accounts, users will not be able to edit 'Restore From' manually and have to select 'Restore From' location from the list of existing locations.
+
+STEP 6: Immediate/Manual local restore
+		You can perform immediate/manual local restore using the below command:
+		$./local_restore.pl
+
+		Using this script, you can restore the from the express device shipped to you. You can view the graphical progress bar for your data getting restored. If you want to view the detailed progress bar press '+' and to collapse press '-'.
+
+STEP 7:	Schedule backup/local backup/continuous data protection/archive cleanup job
+		Run the below command to manage your schedule backup/local backup/continuous data protection/archive cleanup job:
 		$./scheduler.pl
 
-		Select the desired menu option to create, edit, view or delete your schedule backup / express backup / archive cleanup job and follow the instructions.
-		In case you want your schedule job to stop automatically at a scheduled time then set the cut-off time as well, while following the instructions.
+		Scheduler displays a list of active/inactive jobs scheduled earlier which includes Frequency, Next Schedule, Cut-Off, Email Notification etc.
 
-STEP 7: View progress of scheduled backup/express backup/archive cleanup
-		To view the progress of scheduled backup or express backup operation, run the below command:
-		$./Status_Retrieval_Script.pl
+		Select the desired menu option to create, edit, view or disable your schedule backup/local backup/continuous data protection[CDP]/archive cleanup job and follow the instructions.
+		In case you want your scheduled job to stop automatically at a scheduled time then set the cut-off time as well[except CDP], while following the instructions.
 
-STEP 8: View/restore previous versions of a file
+STEP 8: View progress of backup/local backup/continuous data protection/archive cleanup/backup set scan
+		To view the progress of backup/local backup/continuous data protection/archive cleanup operation/backup set scan, run the below command:
+		$./status_retrieval.pl
+
+		You can view the graphical progress bar for the operation. If you want to view the detailed progress bar press '+' and to collapse press '-'[except backup set scan]. You can pause the operation by pressing 'p' and 'r' to resume the operation[except backup set scan].
+
+STEP 9: View/restore previous versions of a file
 		You can view the list of previous versions of any file and select any version that you want to restore. To retrieve a file with earlier versions, run the below command:
 		$./restore_version.pl
 
-		Note: For some IDrive accounts, user will not be able to edit 'Restore From' location manually and have to select 'Restore From' location from the list of existing locations.
+		Note: For some IDrive accounts, users will not be able to edit 'Restore From' location manually and have to select 'Restore From' location from the list of existing locations.
 
-STEP 9:	Stop ongoing backup/express backup/restore/archive operations
-		To stop an ongoing backup or express backup or restore operation, run the below command:
+STEP 10: Stop ongoing backup/local backup/continuous data protection/restore/local restore/archive cleanup operations
+		To stop an ongoing backup/local backup/continuous data protection/restore/local restore/archive cleanup operation, run the below command:
 		$./job_termination.pl
 
-STEP 10: View/Delete operation logs
-		You can view or delete the logs for backup, express backup, restore and archive cleanup operations using the below command:
+STEP 11: View/Delete operation logs
+		You can view or delete the logs for backup/local backup/continuous data protection/restore/local restore/archive cleanup operations using the below command:
 		$./logs.pl
 
-STEP 11: Archive cleanup
-		Archive Cleanup compares the files of your local storage, selected for backup, with the files in your IDrive online backup account. It then deletes the files present in your account but not on your local machine.
-		This feature thus helps you to free up space in your online backup account.
+STEP 12: Archive cleanup
+		Archive Cleanup compares the files of your local storage, selected for backup, with the files in your IDrive online backup account. It then deletes the files present in your account but not on your local machine. This feature thus helps you to free up space in your online backup account.
 
-		To perform archive cleanup run below command:
+		To perform archive cleanup, run below command:
 		$./archive_cleanup.pl
 
-		When you run the script to perform archive cleanup, you can enter a percentage of the total no. of files to be considered for deletion. This percentage based control helps to avoid large-scale deletion of files in your account.
+		When you run the script to perform archive cleanup, you can enter a percentage of the total number of files to be considered for deletion. This percentage based control helps to avoid large-scale deletion of files from your account.
 
-STEP 12: Send error report
+STEP 13: Send error report
 		You can send error report to IDrive support by running the below command:
 		$./send_error_report.pl
 
-STEP 13: Logout from your IDrive account
+STEP 14: Logout from your IDrive account
 		To end the logged in session for your IDrive account, run the below command:
 		$./logout.pl
 
-		You must logout (optional) from the account to avoid any unauthorized access to your IDrive account. After logout, you needs to login again to perform most of the operations.
-		Note: Your scheduled backup / scheduled express backup / periodic cleanup jobs will run even after you logout.
+		You must logout (optional) from the account to avoid any unauthorized access to your IDrive account. After logout, you need to login again to perform most of the operations.
+		Note: Your scheduled backup/scheduled local backup/continuous data protection/periodic cleanup jobs will run even after you logout.
 
-STEP 14: Help
+STEP 15: Help
 		To view help page content by running the below command and follow the instructions:
 		$./help.pl
 
 VI. UPDATING YOUR SCRIPT BUNDLE
 ================================
-		Every script when gets executed displays a header which provide details of logged in IDrive account. Same header also displays information on any newly available script bundle.
-		If Software Update Notification is enabled, you will see the message "A new update is available. Run check_for_update.pl to update to latest package", indicating a new improved version of script bundle has been released.
+		Every script when gets executed displays a header which provides the details of the logged in IDrive account. Same header also displays information on any newly available script bundle.
 
-		To update to most recent available script bundle please perform the below command and follow the instructions.
+		If Software Update Notification is enabled, you will see the message "A new update is available. Run check_for_update.pl to update to the latest package", indicating a new improved version of script bundle has been released.
+
+		To update to the most recent available script bundle please perform the below command and follow the instructions.
 		$./check_for_update.pl
 
 
@@ -222,42 +247,43 @@ VII. EDIT USER DETAILS
 		In case you want to reconfigure your IDrive account locally due to any reason or want to edit user details locally for your configured IDrive account then please perform the below command.
 		$./account_setting.pl
 
-		Only if your account is already configured in current machine you will find the menu which will allow you to reconfigure your IDrive account locally or will allow you to edit the user details locally for your IDrive account. You can configure the following settings:
+		Only if your account is already configured in the current machine, you will find the menu which will allow you to reconfigure your IDrive account locally or will allow you to edit the user account details locally. You can configure the following settings:
 
 		Backup Settings:
 		================
-		- Backup Location: Update the backup location using this option.
-		- Backup Type: Change the backup type from mirror to relative and vice verse using this option.
+		- Backup location: Update the backup location using this option.
+		- Backup Type: Change the backup type from mirror to relative and vice versa using this option.
+		- Backupset Rescan Interval: Set the interval in which IDrive service scans through the backup set and keeps the list of files to backup updated.
 		- Bandwidth throttle(%): Set the Internet bandwidth to be used by the scripts for backups using this option.
-		- Failed files(%): By default failed files % to notify backup as 'Failure' is set to 5%. If the total files failed for backup is more than 5%, then backup will be notified as failure. Change the default setting using this option.
+		- Failed files(%): By default, failed files % to notify backup as 'Failure' is set to 5%. If the total files failed for backup is more than 5%, then backup will be notified as failure. Change the default setting using this option.
+		- Ignore file/folder level permission error: If your backup set contains files/folders that have insufficient access rights, IDrive will not be able to backup those files/folders. Hence in such a case, by default, your backup will be considered as 'Failure'. To ignore file/folder level access rights/permission errors, enable this setting.
 		- Missing files(%): By default missing files % to notify backup as 'Failure' is set to 5%. If the total files missing for backup is more than 5%, then backup will be notified as failure. Change the default setting using this option.
+		- Show hidden files/folders: Disable this setting to skip hidden files/folders from backup.
+		- Upload multiple file chunks simultaneously: Enable this option to upload multiple file chunks simultaneously to improve overall data transfer speed.
 
 		General Settings:
 		=================
-		- Desktop access: Enable this setting to access your computer via dashboard.
-		- E-mail address: Use this option to change the email address provided at the time of account setup locally.
-		- Ignore file/folder level permission error: If your backup set contains files/folders that have insufficient access rights, IDrive will not backup those files/folders. Hence in such a case, by default, your backup will be considered as 'Failure'. To ignore file/folder level access rights/permission errors, enable this setting.
+		- Desktop access: Use this option to enable/disable the dashboard access. For some IDrive accounts, this option will not be available.
+		- E-mail address: Use this option to change the email address provided at the time of setting up an account locally.
 		- Proxy details: If you are behind a proxy address, you should update the proxy settings using this option.
-		- Show hidden files/folders: Disable this setting to skip hidden files/folders from backup.
-		- Software Update Notification: Enable this setting to get a notification for available updates in script header.
-		- Upload multiple file chunks simultaneously: Enable this option to upload multiple file chunks simultaneously to improve overall data transfer speed.
 		- Service path: Update the service path used by IDrive scripts using this option.
+		- Software update notification: Enable this setting to get a notification for available updates in the script header.
 
 		Restore Settings:
 		=================
-		- Restore from location: Use this option to change the location from where backups will be restored.
+		- Restore from location: Use this option to change the location from where items will be restored.
 		- Restore location: Use this option to change the restore location.
-		- Restore Location Prompt: Enable this setting if you wish to receive notification about the restore location before starting restore.
+		- Restore location prompt: Enable this option if you wish to receive notification about the restore location before starting restore.
 
 		Services:
 		=========
-		- Start/Restart dashboard service: Use this option to start or restart dashboard service. This service must be up and running for your machine to be remotely managed from the Dashboard.
-		- Start/Restart IDrive cron service: Use this option to start or restart IDrive cron service. This service is responsible for all the schedule jobs to work as expected.
-
+		- Start/Restart CDP service: Use this option to start or restart the CDP service. This service is responsible for identifying any change that takes place in your local storage for the selected backup set items and pushing that change for backup via CDP (if enabled) or via scheduled backup operation.
+		- Start/Restart Dashboard service: Use this option to start or restart dashboard service. This service must be up and running for your machine to be remotely managed from the Linux web interface (Dashboard).
+		- Start/Restart IDrive cron service: Use this option to start or restart IDrive cron service. This service is responsible for all the scheduled jobs to work as expected.
 
 		Select the desired option and follow the instructions.
 
-		Note: For some users, while re-configuring or editing account, 'Backup Type' will not be displayed and also while editing 'Restore From' location, list of devices will appear.
+		Note: For some users, while reconfiguring or editing account, 'Backup Type' will not be displayed and also while editing 'Restore From' location, list of devices will appear.
 
 VIII. UNINSTALLING YOUR SCRIPT BUNDLE
 ====================================
@@ -266,7 +292,7 @@ VIII. UNINSTALLING YOUR SCRIPT BUNDLE
 		To uninstall the script bundle, run the below command and follow the instructions.
 		$./Uninstall_Script.pl
 
-		This script will automatically remove all IDrive package files and other dependency files. It will also stop all IDrive specific services and cleanup the scheduled backup/express backup/restore/periodic cleanup jobs if any.
+		This script will automatically remove all IDrive package files and other dependency files. It will also stop all IDrive specific services and cleanup the scheduled backup/local backup/continuous data protection/periodic cleanup jobs if any.
 
 IX. RELEASES
 ================
@@ -554,7 +580,7 @@ IX. RELEASES
 		12. Fine tuned the dashboard service for better performance and reliability.
 		13. Fine tuned the trace log writing.
 		14. Handled multiple write scenarios for JSON files present with scripts to avoid possible corruption.
-		15. Allowing to configure/re-configure scripts if remote manager http or https ip is missing.
+		15. Allowing to configure/reconfigure scripts if remote manager http or https ip is missing.
 		16. Handle dashboard stop issue due to disconnection on notification server.
 		17. Providing limited retry count for specific errors.
 		18. Merged BackupSet.info & backupsetsize.txt to BackupSet.txt.json file.
@@ -650,3 +676,102 @@ IX. RELEASES
 		5. Added account status handling to avoid unnecessary server calls.
 		6. Renamed the "Helpers.pm" to "Common.pm".
 		7. Renamed the "Configurations.pm" to "AppConfig.pm".
+
+	Build 2.27
+	==============================================================================================================
+		1. Replaced system curl calls with python requests module for enhanced security.
+		2. Replaced display string "Updating script will logout all profile users" to "Updating Script will logout IDrive from all the Profile users".
+
+	Build 2.28
+	==============================================================================================================
+		1. Fixed the scanning issue in archive_cleanup.pl.
+		2. Fixed the remote file verification issue in edit_supported_files.pl when configured restore from location path having extra slashes.
+		3. Avoiding extra slashes in backup location path at the time of user input.
+		4. Avoiding extra slashes in restore from location path at the time of user input.
+
+	Build 2.29
+	==============================================================================================================
+		1. Fine tuned the script update process for check for update script and silent update from dashboard.
+		2. Fixed the issue for directory restore for few specific scenarios.
+		3. Fixed dashboard launch issue in CentOS 8.
+
+	Build 2.30
+	==============================================================================================================
+		1. Added Continuous Data Protection.
+		2. Added faster sync for backup.
+		3. Added a detailed progress bar.
+		4. Added automated dependency installation.
+		5. Fixed CRON service start issue when multiple disks are present in the machine.
+		6. Added pre install verification in scripts update.
+		7. Reordered account settings edit options.
+		8. Added scripts version verification.
+		9. Added faster express backup.
+		10. Added multiple engine improvements.
+		11. Fixed login issue after delete computer.
+		12. Added improvements in quota calculation.
+		13. Added IDrive scheduler data corruption handling.
+		14. Added backup set history.
+		15. Backup set summary and exclude set summary added to logs.
+		16. Added improvements in backup set size and count calculation in dashboard.
+		17. Fixed partial exclude clearing from dashboard.
+		18. Added encrypted backup set.
+		19. Added next execution time for scheduled jobs.
+		20. Fixed IDrive CRON restart issue.
+		21. Added pause/Resume functionality for backup/express backup.
+		22. Added enhancements in archive cleanup.
+		23. Added waiting for internet connection if absent.
+		24. Fixed directory removal warning during uninstall.
+		25. Fixed utility and static download error checking.
+		26. Added improvements in backup set enumeration.
+		27. Fixed backup status if all backup items are missing.
+		28. Added enhancements in change multiple chunk upload .
+		29. Redesigned the "Status_Retrieval_Script.pl" and renamed it to "status_retrieval.pl".
+		30. Removed 'empty directory delete" option for periodic cleanup.
+		31. Added Regex validation for regex exclude items in edit supported script.
+		32. Excluding express backup directory for both online & express backups if it present.
+		33. Added CDP for Dashboard.
+		34. Fixed reading special chars for private key.
+		35. Added email id field for archive cleanup in dashboard.
+		36. Fixed issue with special characters in service path.
+		37. Partial exclude display in backup log has been fixed.
+        38. Removed the restriction of dependency script execution.
+		39. Fixed the full path exclude issue in express backup script.
+		40. Fixed the logout issue while updating script package using check for update script.
+
+	Build 2.31
+	==============================================================================================================
+		1. Added support for Raspbian OS (32bit).
+		2. Added support for local/express restore using script "local_restore.pl".
+		3. Added support for SSO based login for your IDrive account.
+		4. Fixed the restore failure reason issue when the  got cancelled.
+		5. Displaying message to wait when generating the empty directory list in archive_cleanup.pl.
+		6. Fixed the scan progress bar display issue in archive_cleanup.pl.
+		7. Fixed issue with archive log file rename when archive operation gets terminated.
+		8. Fixed the Cron restart issue w.r.t non-root user.
+		9. Fixed Aarch64 EVS binary mapping, duplicate binaries, universal binary reference.
+		10. Fixed SELINUX availability issue.
+		11. Fixed performance issue with backup set scan.
+		12. Fixed Backupset scan failure during progress display.
+		13. Added /proc and /sys directory to exclude list for backup.
+		14. Renamed the script "express_backup.pl" to "local_backup.pl".
+		15. Fixed Restore issue when it is initiated from the dashboard for a few scenarios.
+		16. Migrated websock based dashboard service from Perl to python.
+		17. Fixed restarting of dashboard service issue after deleting the computer from dashboard.
+		18. Fixed the service location's accented character issue when the configured service directory is missing & getting created again.
+		19. Fixed Perl packages missing issue appears in Fedora 34.
+		20. Fixed FreeBSD scheduled job launch issues.
+		21. Handled the restore failure reason when the restore location doesn't have write permission.
+		22. Fixed the progress bar flicker issue for Backup/Local Backup/Restore/Local Restore operations.
+		23. Fixed the warning/aborted issue when press Ctrl+C after displaying summary of any operation.
+		24. Fixed the backup's cut-off disable issue when disabling periodic cleanup.
+		25. Fixed the scheduler table alignment issue when 6 days selected for weekly backup.
+		26. Fixed the wrong backup failure reason when there is no permission for items, it displaying "No such file or directory" instead "Permission denied".
+
+	Build 2.31 [08/26/2021]
+	==============================================================================================================
+		1. Fixed the empty directory list issue in archive_cleanup.pl.
+
+	Build 2.31 [10/18/2021]
+	==============================================================================================================
+		1. Fixed displaying CDP logs in dashboard view logs.
+		2. Fixed enabling/disabling CDP from dashboard.

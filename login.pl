@@ -31,6 +31,14 @@ sub init {
 	#Common::loadAppPath() or Common::retreat('Failed to load source Code path'); #Commented by Senthil: 25-July-2018
 	Common::loadAppPath();
 	Common::loadServicePath() or Common::retreat('invalid_service_directory');
+	Common::verifyVersionConfig();
+
+	unless (Common::hasPythonBinary()) {
+		Common::display(['downloading_python_binary', '... ']);
+		Common::downloadPythonBinary() or Common::retreat('unable_to_download_python_binary');
+		Common::display('python_binary_downloaded_successfully');
+	}
+
 	# check if user exists and login sesion is intect before loading
 	if (Common::loadUsername() and Common::isLoggedin()) {
 		Common::retreat('your_account_not_configured_properly') if ( Common::loadUserConfiguration() == 101);
@@ -38,7 +46,6 @@ sub init {
 
 		if (Common::getUserConfiguration('DEDUP') eq 'on') {
 			Common::displayHeader();
-
 			my @result = Common::fetchAllDevices();
 			unless ($result[0]->{'STATUS'} eq 'SUCCESS') {
 				Common::retreat('your_account_not_configured_properly');
@@ -68,22 +75,28 @@ sub init {
 	Common::displayHeader();
 	Common::unloadUserConfigurations();
 
+	# SSO login.
+	Common::display(["please_choose_the_method_to_authenticate_your_account", ":"]);
+	my @options = (
+		'idrive_login',
+		'sso_login',
+	);
+	Common::displayMenu('', @options);
+	my $loginType = Common::getUserMenuChoice(scalar(@options));
+
 	# Get user name and validate
 	my $uname = Common::getAndValidate(['enter_your', " ", $AppConfig::appType, " ", 'username', ': '], "username", 1);
 	$uname = lc($uname); #Important
 	my $emailID = $uname;
 
-	# Get password and validate
-	my $upasswd = Common::getAndValidate(['enter_your', " ", $AppConfig::appType , " ", 'password', ': '], "password", 0);
-
 	my $loggedInUser = Common::getUsername();
 	my $isLoggedin = Common::isLoggedin();
 
 	#validate user account
-	Common::display(['verifying_your_account_info'],1);
+	#Common::display(['verifying_your_account_info'],1);
 
 	# Get IDrive/IBackup username list associated with email address
-	($uname,$upasswd) = Common::getUsernameList($uname, $upasswd) if(Common::isValidEmailAddress($uname));
+	$uname = Common::getUsernameList($uname) if (Common::isValidEmailAddress($uname));
 
 	# Verify user configuration file is valid if not ask for reconfigure
 	Common::setUsername($uname);
@@ -91,14 +104,16 @@ sub init {
 	unless ($errorKey) {
 		Common::retreat('account_not_configured');
 	}
-	elsif ($errorKey == 101 or $errorKey == 104) {
+	elsif ($errorKey == 101 or $errorKey == 104 or $errorKey == 105) {
 		Common::retreat($AppConfig::errorDetails{$errorKey});
 	}
 
 	# validate IDrive user details
-	my @responseData = Common::authenticateUser($uname, $upasswd, $emailID) or Common::retreat(['failed_to_authenticate_user',"'$uname'."]);
+	my @responseData = Common::authenticateUser($uname, $emailID, 0, $loginType) or Common::retreat(['failed_to_authenticate_user',"'$uname'."]);
+	my $upasswd = $responseData[0]->{'p'};
 
 	my $switchAccount = 0;
+
 	if ($loggedInUser && $loggedInUser ne $uname && !$isLoggedin) {
 		Common::display(["\n\nSwitching user from \"", $loggedInUser , "\" to \"", $uname , "\" will stop all your running jobs and disable all your schedules for \"", $loggedInUser, "\". Do you really want to continue (y/n)?"], 1);
 		my $userChoice = Common::getAndValidate(['enter_your_choice'], "YN_choice", 1);
@@ -154,14 +169,15 @@ sub init {
 			unless (($result[0]->{'STATUS'} eq 'SUCCESS') and ($result[0]->{'MSG'} eq 'no_stdout')) {
 				Common::retreat('failed_to_encode_private_key');
 			}
+
 			$configType = 'PRIVATE';
-			#Common::setUserConfiguration('ENCRYPTIONTYPE', 'PRIVATE');
-			#Common::createUTF8File('PRIVATECONFIG') or Common::retreat('failed_to_create_utf8_file');
+			# Common::setUserConfiguration('ENCRYPTIONTYPE', 'PRIVATE');
+			# Common::createUTF8File('PRIVATECONFIG') or Common::retreat('failed_to_create_utf8_file');
 		}
 		else {
 			$configType = 'DEFAULT';
-			#Common::setUserConfiguration('ENCRYPTIONTYPE', 'DEFAULT');
-			#Common::createUTF8File('DEFAULTCONFIG') or Common::retreat('failed_to_create_utf8_file');
+			# Common::setUserConfiguration('ENCRYPTIONTYPE', 'DEFAULT');
+			# Common::createUTF8File('DEFAULTCONFIG') or Common::retreat('failed_to_create_utf8_file');
 		}
 
 		# @result = Common::runEVS('tree');
@@ -243,14 +259,19 @@ sub init {
 			Common::retreat('unable_to_find_your_backup_location');
 		}
 	}
+
 	if ((Common::getUserConfiguration('DELCOMPUTER') eq 'D_1') or (Common::getUserConfiguration('DELCOMPUTER') eq '')) {
 		Common::setUserConfiguration('DELCOMPUTER', 'S_1');
 	}
+
 	Common::saveUserConfiguration();
 
 	Common::updateCronForOldAndNewUsers($loggedInUser, $uname) if($switchAccount and $AppConfig::appType eq 'IDrive');
 	#create user.txt for logged in user
-	Common::updateUserLoginStatus($uname,1);
+	Common::updateUserLoginStatus($uname,1,1);
+	unlink(Common::getCDPHaltFile()) if(Common::hasFileNotifyPreReq() and -f Common::getCDPHaltFile());
+	Common::setCDPInotifySupport();
+	Common::startCDPWatcher(1) unless(Common::isCDPServicesRunning());
 	Common::deactivateOtherUserCRONEntries($uname);
 	Common::saveMigratedLog(); #Added to upload the migrated log which is not yet uploaded
 	# execute the cgi to update record in mysql db

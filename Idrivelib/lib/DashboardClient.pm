@@ -14,6 +14,7 @@ use warnings;
 use lib map{if(__FILE__ =~ /\//) { substr(__FILE__, 0, rindex(__FILE__, '/'))."/$_";} else { "./$_"; }} qw(Idrivelib/lib);
 
 use Idrivelib;
+
 use Sys::Hostname;
 use POSIX ":sys_wait_h";
 use IO::Socket;
@@ -61,7 +62,6 @@ sub init {
 	$AppConfig::callerEnv = 'BACKGROUND';
 	$AppConfig::traceLogFile = 'dashboard.log';
 	$AppConfig::displayHeader = 0;
-
 
 	Common::loadAppPath();
 	exit(1) unless Common::loadServicePath();
@@ -476,10 +476,10 @@ sub request {
 #	$curl->setopt(CURLOPT_VERBOSE, 1);
 	$curl->setopt(CURLOPT_POSTFIELDS, Common::buildQuery($_[0]->{'data'}));
 
-	if (getUserConfiguration('PROXY') ne '') {
-		my $proxyuser = getUserConfiguration('PROXYUSERNAME') ne ''? Common::urlEncode(getUserConfiguration('PROXYUSERNAME')) : '';
-		my $proxypwd = getUserConfiguration('PROXYPASSWORD') ne ''? Common::decryptString(getUserConfiguration('PROXYPASSWORD')) : '';
-		$curl->setopt(CURLOPT_PROXY, "http://" . getUserConfiguration('PROXYIP') . ":" . getUserConfiguration('PROXYPORT'));
+	if (Common::getProxyDetails('PROXY') ne '') {
+		my $proxyuser = Common::getProxyDetails('PROXYUSERNAME') ne ''? Common::urlEncode(Common::getProxyDetails('PROXYUSERNAME')) : '';
+		my $proxypwd = Common::getProxyDetails('PROXYPASSWORD') ne ''? Common::decryptString(Common::getProxyDetails('PROXYPASSWORD')) : '';
+		$curl->setopt(CURLOPT_PROXY, "http://" . Common::getProxyDetails('PROXYIP') . ":" . Common::getProxyDetails('PROXYPORT'));
 		$curl->setopt(CURLOPT_PROXYUSERPWD, $proxyuser . (($proxypwd ne '')? ":$proxypwd" : '')) if ($proxyuser ne '');
 	}
 	my ($retcode, $responseCode, $jd);
@@ -1317,7 +1317,7 @@ sub restoreSchduledJobs {
 						($response->{$uname}{'archive'}{$name}{'cmd'} =~ getUsername())) {
 						my $tmp = (split((getUsername() . ' '), $response->{$uname}{'archive'}{$name}{'cmd'}))[1];
 						my @tmp2= split(' ', $tmp);
-						$response->{$uname}{'archive'}{$name}{'cmd'} = ($tmp2[0] . ' ' . $tmp2[1]);
+						$response->{$uname}{'archive'}{$name}{'cmd'} = ($tmp2[0] . ' ' . $tmp2[1] . ' 0');
 					}
 				}
 			}
@@ -1437,7 +1437,7 @@ debug("ic $ic " . __LINE__);
 				$d{'backuplocation'} = (split("#", getUserConfiguration('BACKUPLOCATION')))[1];
 			}
 
-			my $uvf = getCatfile(Common::getAppPath(), $AppConfig::updateVersionInfo);
+			my $uvf = Common::getUpdateVersionInfoFile();
 			if (-f $uvf and !-z $uvf) {
 				$d{'hasupdate'} = 1;
 			}
@@ -1461,28 +1461,19 @@ debug("ic $ic " . __LINE__);
 
 			my $response = request($params);
 
-			updateFileSetSize('backup');
-			updateFileSetSize('localbackup');
+			Common::createJSSizeCalcReqByJobType('backup');
+			Common::createJSSizeCalcReqByJobType('localbackup');
+			syncFilesetSizeWithFork('backup');
+			syncFilesetSizeWithFork('localbackup');
 
 			return 1;
 		},
 
 		'get_fileset_size' => sub {
 			my $bsf = Common::getJobsPath($content->{'jobtype'}, 'file');
-			my $backupsizelock = Common::getBackupsetSizeLockFile($content->{'jobtype'});
-			if (defined($content->{'ondemand'}) and $content->{'ondemand'} == 1 and
-				-f "$bsf.json" and !Common::isFileLocked($backupsizelock)) {
-				my %backupsetsizes = (-f "$bsf.json")? %{JSON::from_json(getFileContents("$bsf.json"))} : ();
-				my %backupSetInfo;
-				foreach my $filename (keys %backupsetsizes) {
-					$backupSetInfo{$filename} = {
-						'size' => -1,
-						'ts'   => '',
-						'filecount' => 'NA',
-						'type' => $backupsetsizes{$filename}->{'type'}
-					}
-				}
-				Common::fileWrite2("$bsf.json", JSON::to_json(\%backupSetInfo));
+
+			if (defined($content->{'ondemand'}) and $content->{'ondemand'} == 1 and -f "$bsf.json") {
+				Common::removeBKPSetSizeCache($content->{'jobtype'});
 			}
 
 			sendInitialFilesetUpdate($content->{'jobtype'});
@@ -1512,7 +1503,7 @@ debug('get file size');
 		},
 
 		'update_remote_manage_ip' => sub {
-			my @responseData = Common::authenticateUser(getUsername(), &Common::getPdata(getUsername())) or return 0;
+			my @responseData = Common::authenticateUser(getUsername()) or return 0;
 			return 0 if ($responseData[0]->{'STATUS'} eq 'FAILURE');
 
 			return 0 if ((exists $responseData[0]->{'plan_type'}) and ($responseData[0]->{'plan_type'} eq 'Mobile-Only') and
@@ -1605,7 +1596,47 @@ debug('get file size');
 
 			return 1;
 		},
+		'rescan_now' => sub {
+			my $status = AppConfig::FAILURE;
+			my $errmsg = '';
+			my $warnings = '';
 
+			my $bsf = Common::getJobsPath('backup', 'file');
+			if (!-f $bsf || -z $bsf) {
+				$errmsg = 'backupset_is_empty';
+			} elsif(!Common::isCDPWatcherRunning()) { 
+				$errmsg = 'database_service_not_running';
+			} else {
+				my $bsf = Common::getJobsPath('backup', 'file');
+				my $bdir = Common::getJobsPath('backup');
+				Common::createScanRequest($bdir, Common::basename($bdir), 0, 'backup');
+			}
+
+			$status = AppConfig::SUCCESS if ($errmsg eq '');
+
+			my %s = (
+				'status' => $status,
+				'errmsg' => $errmsg,
+				'warnings' => $warnings,
+			);
+
+			my $params = Idrivelib::get_dashboard_params({
+				'0'   => '2',
+				'1017'=> $data->{1017},
+				'111' => $AppConfig::evsVersion,
+				'113' => lc($AppConfig::deviceType),
+				'130' => zlibCompress(to_json(\%s)),
+				#'119' => 1,
+				'101' => $at
+			}, 1, 0);
+			$params->{host} = getRemoteManageIP();
+			#$params->{port} = $AppConfig::NSPort;
+			$params->{method} = 'POST';
+			$params->{json} = 1;
+			my $response = request($params);
+
+			return 1;
+		},
 		'save_fileset_content' => sub {
 			my $jobName = 'backup';
 			$jobName   = $_[0] if (defined $_[0]);
@@ -1614,56 +1645,16 @@ debug('get file size');
 
 			$localSaveOnly = $ic if ($ic);
 
-			# $content->{'files'} = zlibRead($content);
-
 			my $bsf = Common::getJobsPath($jobName, 'file');
 			open(my $bsContents, '>', $bsf) or return 0;
 
-			my $realkey = '';
-			my %backupSet;
-			if ($jobName =~ /backup/) {
-				my @itemsarr = ();
-				foreach my $key (keys %{$content->{'files'}}) {
-					if (utf8::is_utf8($key)) {
-						utf8::downgrade($key);
-					}
-					push @itemsarr, $key;
-				}
-				@itemsarr = Common::verifyEditedFileContent(\@itemsarr);
-				if (scalar(@itemsarr) > 0) {
-					%backupSet = Common::getLocalDataWithType(\@itemsarr, 'backup');
-					%backupSet = Common::skipChildIfParentDirExists(\%backupSet);
-				}
-				else {
-					%backupSet= ();
-				}
-			}
-			else {
-				%backupSet = %{$content->{'files'}};
+			if ($jobName ne 'restore') {
+				my $oldbkpsetfile	= qq($bsf$AppConfig::backupextn);
+				Common::copy($bsf, $oldbkpsetfile);
 			}
 
-			my %backupSetInfo;
-			my %backupsetsizes = (-f "$bsf.json")? %{JSON::from_json(getFileContents("$bsf.json"))} : ();
-			foreach my $key (keys %backupSet) {
-				$realkey = $key;
-				$realkey =~ s/\/$// unless(exists($content->{'files'}{$realkey}));
-
-				print $bsContents "$key\n";
-				if (exists $backupsetsizes{$key}) {
-					$backupSetInfo{$key} = $backupsetsizes{$key};
-				}
-				else {
-					$backupSetInfo{$key} = {
-						'size' => -1,
-						'ts'   => '',
-						'filecount' => 'NA',
-						'type' => $content->{'files'}{$realkey}{'type'}
-					}
-				}
-			}
-			Common::fileWrite2("$bsf.json", JSON::to_json(\%backupSetInfo));
-
-			close($bsContents);
+			Common::processAndSaveJobsetContents($content->{'files'}, $jobName, $bsf, 1);
+			Common::createScanRequest(Common::dirname($bsf) . '/', Common::basename(Common::dirname($bsf)), 0, $jobName) if($jobName =~ /backup/i);
 
 			if ($ic) {
 				return 1 if ($ic < 0);
@@ -1675,9 +1666,9 @@ debug('get file size');
 			my $processingreq;
 			my %notifsizes;
 			if ($jobName ne 'restore') {
-				my $backupsetdata = getFileContents($bsf, 'array');
+				my $backupsetdata = Common::getDecBackupsetContents($bsf, 'array');
 				($processingreq, %notifsizes) = Common::getBackupsetFileSize($backupsetdata);
-				%backupsetsizes = (-f "$bsf.json")? %{JSON::from_json(getFileContents("$bsf.json"))} : ();
+				my %backupsetsizes = (-f "$bsf.json")? %{JSON::from_json(getFileContents("$bsf.json"))} : ();
 				Common::updateDirSizes(\%backupsetsizes, \%notifsizes, 0);
 				my $rid = '1007';
 				$rid = '1008' if ($jobName eq 'localbackup');
@@ -1726,9 +1717,9 @@ debug('get file size');
 				my $response = request($params);
 			}
 
-			if ($jobName ne 'restore') {
-				updateFileSetSize($jobName);
-			}
+			# adding -1 to the size holder has already been done from processAndSaveJobsetContents.
+			# So we dont have to worry about the pid check.
+			syncFilesetSizeWithFork($jobName) if($jobName ne 'restore');
 
 			return 1;
 		},
@@ -1744,7 +1735,7 @@ debug('get file size');
 			my $bsf = Common::getJobsPath($jobName, 'file');
 			my %backupSet;
 			my %backupsetsizes;
-			my $backupsetdata = getFileContents($bsf, 'array');
+			my $backupsetdata = Common::getDecBackupsetContents($bsf, 'array');
 			my ($processingreq, %notifsizes) = Common::getBackupsetFileSize($backupsetdata);
 			if (-f "$bsf.json" and -s "$bsf.json" > 0) {
 				$backupSet{'files'} = getFileContents("$bsf.json");
@@ -1809,7 +1800,7 @@ debug('get file size');
 				$scriptArgs = $_[1];
 			}
 			else {
-				Common::tracelog('atleast_script_name_is_required');
+				Common::traceLog('atleast_script_name_is_required');
 				return 0;
 			}
 
@@ -1858,7 +1849,7 @@ debug('get file size');
 				}
 
 				my $cmd = ("$AppConfig::perlBin " . Common::getScript('job_termination', 1));
-				$cmd   .= (" $_[0] " . getUsername() . ' 1>/dev/null 2>/dev/null &');
+				$cmd   .= (" $_[0] " . getUsername() . ' 0 0 '.$AppConfig::mcUser.' operation_cancelled_from_dashboard 1>/dev/null 2>/dev/null &');
 				$cmd = Common::updateLocaleCmd($cmd);
 				unless (system($cmd) == 0) {
 					$status{'status'} = AppConfig::FAILURE
@@ -1868,7 +1859,7 @@ debug('get file size');
 				}
 			}
 			else {
-				Common::tracelog('job_name_is_required');
+				Common::traceLog('job_name_is_required');
 				$status{'status'} = AppConfig::FAILURE
 			}
 
@@ -1921,8 +1912,9 @@ debug('get file size');
 			my $progressDetailsFile = getCatfile(Common::getJobsPath($jobName), $AppConfig::progressDetailsFilePath);
 			my $pidFile             = getCatfile(Common::getJobsPath($jobName), 'pid.txt');
 			my $progressPidFile     = getCatfile(Common::getJobsPath($jobName), 'dashboardupdate.pid');
+			my $whichscan			= Common::getBackupsetScanType();
 
-			my ($pdfHandle, @pdfContent, $pdfc, @progressData,
+			my ($pdfHandle, @pdfContent, $pdfc, $progressData, $indprogress,
 					$response, %params, %progressInfo, $p);
 
 			%progressInfo = (
@@ -1974,6 +1966,7 @@ debug('get file size');
 						$progressStatus = 2;
 					}
 				}
+
 				$fn[0] = 0 if ($fn[0] eq '');
 				$backupTime = $fn[0];
 				$backupTime = ($backupTime + $at) if ($backupTime);
@@ -2066,8 +2059,8 @@ debug('get file size');
 				my $readTillEOF = 1;
 				my $fh;
 
-				if (open(my $fh, ">>", $progressPidFile)) {
-					unless (flock($fh, 2|4)) {
+				if (open($fh, ">>", $progressPidFile)) {
+					unless (flock($fh, LOCK_EX|LOCK_NB)) {
 						close($fh);
 						Common::traceLog(['unable_to_lock_file', $progressPidFile]);
 						return 1;
@@ -2090,17 +2083,36 @@ debug('get file size');
 						sleep(5);
 						next;
 					}
-					@progressData = Common::getProgressDetails($progressDetailsFile);
 
-					%progressInfo = (
-						'status' => $content->{'notification_value'},
-						'type' => $progressData[0],
-						'transfered_size' => $progressData[1],
-						'total_size' => $progressData[2],
-						'transfer_rate' => $progressData[3],
-						'filename' => $progressData[4],
-						'file_size' => $progressData[5],
-					);
+					($progressData, $indprogress) = Common::getProgressDetails($progressDetailsFile);
+
+					if($whichscan && $whichscan eq lc($jobName)) {
+						my $scanprog	= Common::getCDPLockFile('scanprog');
+						if(-f $scanprog) {
+							my $fc = getFileContents($scanprog, 'array');
+
+							%progressInfo = (
+								'status' => $content->{'notification_value'},
+								'type' => 'scanning',
+								'transfered_size' => 0,
+								'total_size' => 0,
+								'transfer_rate' => 0,
+								'filename' => $fc->[1] . '|' . $fc->[0],
+								'file_size' => 0,
+							);
+						}
+					} else {
+						%progressInfo = (
+							'status' => $content->{'notification_value'},
+							'type' => $progressData->[0],
+							'transfered_size' => $progressData->[1],
+							'total_size' => $progressData->[2],
+							'transfer_rate' => $progressData->[3],
+							'filename' => $progressData->[4],
+							'file_size' => $progressData->[5],
+						);
+					}
+
 					$params = Idrivelib::get_dashboard_params({
 						'0'   => '2',
 						$rid  => (getUsername() . Common::getMachineUID(0) . getMachineUser()),
@@ -2203,13 +2215,30 @@ debug('get file size');
 				`$cmd`;
 			}
 
-			if (!$ic && $userConfig[0]->{'SHOWHIDDEN'} ne getUserConfiguration('SHOWHIDDEN')) {
-				Common::removeBKPSetSizeCache('backup');
-				Common::removeBKPSetSizeCache('localbackup');
-				sendInitialFilesetUpdate('backup');
-				sendInitialFilesetUpdate('localbackup');
-				updateFileSetSize('backup');
-				updateFileSetSize('localbackup');
+			if (Common::canKernelSupportInotify()) {
+				if (defined($userConfig[0]->{'CDP'}) and $userConfig[0]->{'CDP'}) {
+					Common::setDefaultCDPJob(sprintf("%02d", $userConfig[0]->{'CDP'}), int($userConfig[0]->{'CDP'}), 0) if($userConfig[0]->{'CDP'} ne getUserConfiguration('CDP'));
+				}
+				else {
+					my $jt	= $AppConfig::cdp;
+					my $jn	= "default_backupset";
+					
+					Common::createCrontab($jt, $jn);
+					Common::setCrontab($jt, $jn, {'settings' => {'status' => 'disabled'}});
+					Common::setCronCMD($jt, $jn);
+					Common::saveCrontab(0);
+				}
+	
+				if(defined($userConfig[0]->{'RESCANINTVL'}) && $userConfig[0]->{'RESCANINTVL'} ne getUserConfiguration('RESCANINTVL')) {
+					my @rsint = split(/\:/, $userConfig[0]->{'RESCANINTVL'});
+	
+					Common::setCDPRescanCRON(sprintf("%02d", $rsint[0]), sprintf("%02d", $rsint[1]), sprintf("%02d", $rsint[2]), 0);
+				}
+			}
+
+			my $needexref = 0;
+			if(getUserConfiguration('SHOWHIDDEN') ne $userConfig[0]->{'SHOWHIDDEN'}) {
+				$needexref = 1;
 			}
 
 			if (($errMsg eq '') and setUserConfiguration(@userConfig) and
@@ -2227,6 +2256,12 @@ debug('get file size');
 			}
 			else {
 				$status{'errmsg'} = $errMsg;
+			}
+
+			if($needexref) {
+				Common::removeBKPSetSizeCache('backup');
+				Common::removeBKPSetSizeCache('localbackup');
+				Common::createJobSetExclDBRevRequest('hidden');
 			}
 
 			return 1 if ($ic);
@@ -2260,7 +2295,7 @@ debug('get file size');
 					(Common::getJobsPath($job) . "/$AppConfig::logStatFile"));
 				foreach($l->Keys) {
 					$data{'logs'}{$_} = $l->FETCH($_);
-					$data{'logs'}{$_}{'type'} = $job;
+					$data{'logs'}{$_}{'type'} = ($job eq $AppConfig::cdp)? $AppConfig::cdpfn : $job;
 				}
 			}
 
@@ -2287,7 +2322,13 @@ debug('get file size');
 
 		'get_log' => sub {
 			my %logData = ();
-			my $logFile = getCatfile(Common::getJobsPath($content->{'type'}, 'logs'), $content->{'filename'});
+			my $jbtype	= $content->{'type'};
+			$jbtype		= $AppConfig::cdp if($jbtype eq $AppConfig::cdpfn);
+			my $logFile = getCatfile(Common::getJobsPath($jbtype, 'logs'), $content->{'filename'});
+			my $numberOfLines = "head -n20";
+			if ($jbtype eq $AppConfig::cdp) {
+				$numberOfLines = "tail -n100";
+			}
 
 			if (-f $logFile) {
 				my $logContentCmd = Common::updateLocaleCmd("tail -n30 '$logFile'");
@@ -2299,7 +2340,7 @@ debug('get file size');
 				$logData{'status'} = AppConfig::SUCCESS;
 
 				foreach (@logContent) {
-					if (!$copySummary and substr($_, 0, 8) eq 'Summary:') {
+					if (!$copySummary and substr($_, 0, 9) eq '[SUMMARY]') {
 						$copySummary = 1;
 					}
 					elsif (!$copyFileLists and substr($_, 0, 1) eq '[') {
@@ -2307,6 +2348,9 @@ debug('get file size');
 					}
 
 					if ($copySummary) {
+						if ($_ =~ /^---------/) {
+							next;
+						}
 						if ($_ =~ m/^Backup End Time/) {
 							my @startTime = localtime((split('_', $content->{'filename'}))[0]);
 							my $et = localtime(mktime(@startTime));
@@ -2333,12 +2377,12 @@ debug('get file size');
 				# my $notemsg = Common::getLocaleString('files_in_trash_may_get_restored_notice');
 				# $logData{'summary'} =~ s/$notemsg//gs;
 
-				my $logheadCmd = Common::updateLocaleCmd("head -n20 '$logFile'");
+				my $logheadCmd = Common::updateLocaleCmd("$numberOfLines '$logFile'");
 				my @loghead = `$logheadCmd`;
-				$logData{'details'}	= Common::getLocaleString('version_cc_label') . $AppConfig::version . "\n";
-				$logData{'details'} .= Common::getLocaleString('release_date_cc_label') . $AppConfig::releasedate . "\n";
+				# $logData{'details'}	= Common::getLocaleString('version_cc_label') . $AppConfig::version . "\n";
+				# $logData{'details'} .= Common::getLocaleString('release_date_cc_label') . $AppConfig::releasedate . "\n";
 				foreach(@loghead) {
-					last if (substr($_, 0, 8) eq 'Summary:');
+					last if (substr($_, 0, 9) eq '[SUMMARY]');
 					$logData{'details'} .= $_;
 				}
 			}
@@ -2391,7 +2435,36 @@ debug('get file size');
 
 			return 1;
 		},
+		'save_archive_settings' => sub {
+			my $archiveSettingsFile = getCatfile(
+				Common::getJobsPath('periodic_archive'),
+				$AppConfig::archiveSettingsFile
+			);
 
+			my %status = (
+				'status' => AppConfig::FAILURE
+			);
+			if (Common::fileWrite($archiveSettingsFile, to_json($content->{'settings'}))) {
+				$status{'status'} = AppConfig::SUCCESS;
+			}
+
+			my $params = Idrivelib::get_dashboard_params({
+				'0'   => '2',
+				'1017'=> $data->{1017},
+				'111' => $AppConfig::evsVersion,
+				'113' => lc($AppConfig::deviceType),
+				'130' => zlibCompress(to_json(\%status)),
+				#'119' => 1,
+				'101' => $at
+			}, 1, 0);
+			$params->{host} = getRemoteManageIP();
+			#$params->{port} = $AppConfig::NSPort;
+			$params->{method} = 'POST';
+			$params->{json} = 1;
+			my $response = request($params);
+
+			return 1;
+		},
 		'get_settings' => sub {
 			my %settings = ();
 			my $fullExcludeListFile = getCatfile(getUserProfilePath(), $AppConfig::fullExcludeListFile);
@@ -2432,6 +2505,7 @@ debug('get file size');
 			my $partialExcludeListFile = getCatfile(getUserProfilePath(), $AppConfig::partialExcludeListFile);
 			my $regexExcludeListFile = getCatfile(getUserProfilePath(), $AppConfig::regexExcludeListFile);
 			my $fileContent = '';
+			my $regextype = 'all';
 
 			if (defined $content->{'settings'}{'fullExclude'}) {
 				Common::fileWrite("$fullExcludeListFile.info", $content->{'settings'}{'fullExclude'});
@@ -2439,8 +2513,11 @@ debug('get file size');
 					next if ($_ eq 'enabled' or $_ eq 'disabled');
 					$fileContent .= "$_\n";
 				}
+
 				Common::fileWrite($fullExcludeListFile, $fileContent);
+				$regextype = 'full';
 			}
+
 			if (defined $content->{'settings'}{'partialExclude'}) {
 				$fileContent = '';
 				Common::fileWrite("$partialExcludeListFile.info", $content->{'settings'}{'partialExclude'});
@@ -2448,8 +2525,11 @@ debug('get file size');
 					next if ($_ eq 'enabled' or $_ eq 'disabled');
 					$fileContent .= "$_\n";
 				}
+
 				Common::fileWrite($partialExcludeListFile, $fileContent);
+				$regextype = 'partial';
 			}
+
 			if (defined $content->{'settings'}{'regexExclude'}) {
 				$fileContent = '';
 				Common::fileWrite("$regexExcludeListFile.info", $content->{'settings'}{'regexExclude'});
@@ -2457,15 +2537,16 @@ debug('get file size');
 					next if ($_ eq 'enabled' or $_ eq 'disabled');
 					$fileContent .= "$_\n";
 				}
+
 				Common::fileWrite($regexExcludeListFile, $fileContent);
+				$regextype = 'regex';
 			}
 
 			Common::removeBKPSetSizeCache('backup');
 			Common::removeBKPSetSizeCache('localbackup');
 			sendInitialFilesetUpdate('backup');
 			sendInitialFilesetUpdate('localbackup');
-			updateFileSetSize('backup');
-			updateFileSetSize('localbackup');
+			Common::createJobSetExclDBRevRequest($regextype);
 
 			if ($ic) {
 				return 1 if ($ic < 0);
@@ -2527,10 +2608,61 @@ debug('get file size');
 		},
 
 		'remote_install' => sub {
+			my %status;
+			unless (exists $content->{'installdependencies'}) {
+				$status{'status'} = AppConfig::FAILURE;
+				$status{'installdependencies'} = 'yes';
+				$status{'dependencies'} = "";
+				my $os = Common::getOSBuild();
+				my $pkginstallseq  = $AppConfig::depInstallUtils{$os->{'os'}}{'pkg-install'};
+				my $cpaninstallseq = $AppConfig::depInstallUtils{$os->{'os'}}{'cpan-install'};
+				my ($pkginstallseq1, $packagenames) = Common::getPkgInstallables($pkginstallseq);
+				my ($cpaninstallseq1, $cpanpacks) = Common::getCPANInstallables($cpaninstallseq);
+				if (@{$packagenames}) {
+					$status{'dependencies'} .= join(", ", @{$packagenames});
+				}
+				if (@{$cpanpacks}) {
+					$status{'dependencies'} .= join(", ", @{$cpanpacks});
+				}
+
+				my $params = Idrivelib::get_dashboard_params({
+					'0'   => '2',
+					'1017'=> $data->{1017},
+					'111' => $AppConfig::evsVersion,
+					'113' => lc($AppConfig::deviceType),
+					'130' => zlibCompress(to_json(\%status)),
+					#'119' => 1,
+					'101' => $at
+				}, 1, 0);
+				$params->{host} = getRemoteManageIP();
+				$params->{method} = 'POST';
+				$params->{json} = 1;
+				my $response = request($params);
+				return 1;
+			}
+			else {
+				$status{'status'} = AppConfig::SUCCESS;
+				my $params = Idrivelib::get_dashboard_params({
+					'0'   => '2',
+					'1017'=> $data->{1017},
+					'111' => $AppConfig::evsVersion,
+					'113' => lc($AppConfig::deviceType),
+					'130' => zlibCompress(to_json(\%status)),
+					#'119' => 1,
+					'101' => $at
+				}, 1, 0);
+				$params->{host} = getRemoteManageIP();
+				#$params->{port} = $AppConfig::NSPort;
+				$params->{method} = 'POST';
+				$params->{json} = 1;
+				my $response = request($params);
+	
+				return 1;
+			}
+
 			my $cmd = sprintf("%s %s silent &", $AppConfig::perlBin, Common::getScript('check_for_update', 1));
 			$cmd = Common::updateLocaleCmd($cmd);
 
-			my %status;
 			unless (system($cmd) == 0) {
 			$status{'status'} = AppConfig::FAILURE;
 			}
@@ -2599,6 +2731,10 @@ debug('get file size');
 			if (Common::checkCRONServiceStatus() != Common::CRON_RUNNING) {
 				$errmsg = 'IDrive_cron_service_is_stopped';
 			}
+			elsif(!-f Common::getCrontabFile() || -z Common::getCrontabFile()) {
+				$errmsg = 'please_reconfigure_account_from_backend';
+				$status = AppConfig::FAILURE;
+			}
 			elsif (exists $content->{'crontab'}{getUsername()} and Common::loadCrontab()) {
 				foreach my $jobType (keys %{$content->{'crontab'}{getUsername()}}) {
 					last if ($errmsg ne '');
@@ -2617,8 +2753,8 @@ debug('get file size');
 							$fileset = Common::getJobsPath($jt, 'file');
 							unless (-f $fileset and !-z $fileset) {
 								$warnings = "$jobName: backup set is empty\n";
-								if (exists $content->{'crontab'}{getUsername()}{$jobType}{$jobName}{'settings'} and
-								exists $content->{'crontab'}{getUsername()}{$jobType}{$jobName}{'settings'}{'frequency'} and
+								if(exists $content->{'crontab'}{getUsername()}{$jobType}{$jobName}{'settings'} &&
+								exists $content->{'crontab'}{getUsername()}{$jobType}{$jobName}{'settings'}{'frequency'} &&
 								$content->{'crontab'}{getUsername()}{$jobType}{$jobName}{'settings'}{'frequency'} eq 'immediate') {
 									next;
 								}
@@ -2655,6 +2791,7 @@ debug('backup_job_is_already_in_progress_try_again');
 					Common::saveCrontab((($ic > -1) ? $ic : 0));
 				}
 			}
+
 			return 1 if ($ic);
 
 			my %s = (
@@ -2737,6 +2874,9 @@ debug('update alert status' . __LINE__);
 				restoreUserSettings($deviceInfo[0], $deviceInfo[2]);
 				restoreSettings($deviceInfo[0], $deviceInfo[2]);
 
+				# Place a backup set scan request
+				Common::createBackupStatRenewalByJob('backup');
+
 				return 1;
 			}
 
@@ -2815,7 +2955,7 @@ debug('update alert status' . __LINE__);
 	};
 
 	$activity{'start_localbackup'} = sub {
-		return $activity{'start_job'}('express_backup', 'dashboard');
+		return $activity{'start_job'}('local_backup', 'dashboard');
 	};
 
 	$activity{'stop_localbackup'} = sub {
@@ -2936,7 +3076,7 @@ sub syncFilesetSizeOnIntervals {
 	my $rid = '1007';
 	$rid = '1008' if ($backuptype eq 'localbackup');
 
-	my $backupsetdata = getFileContents($bsf, 'array');
+	my $backupsetdata = Common::getDecBackupsetContents($bsf, 'array');
 	my ($processingreq, %notifsizes) = Common::getBackupsetFileSize($backupsetdata);
 	my $itemCount = Common::getBackupsetItemCount($bsf);
 	my $processeditemcount = Common::getBackupsetFileAndMissingCount($bsf);
@@ -3004,7 +3144,7 @@ sub syncFilesetSizeOnIntervals {
 		}
 
 		#select(undef, undef, undef, 0.1);
-		Common::sleepForMilliSec(500); # Sleep for 100 milliseconds
+		Common::sleepForMilliSec(100); # Sleep for 100 milliseconds
 		$lastts += 0.1;
 	}
 }
@@ -3015,11 +3155,11 @@ sub syncFilesetSizeOnIntervals {
 # Added By				: Sabin Cheruvattil
 #****************************************************************************************************/
 sub sendInitialFilesetUpdate {
-	my $bsf = getCatfile(Common::getJobsPath($_[0]), $AppConfig::backupsetFile);
+	my $bsf = Common::getJobsPath($_[0], 'file');
 	my $processingreq = 0;
 	my %notifsizes;
 	if (-f $bsf and -s $bsf > 0) {
-		my $backupsetdata = getFileContents($bsf, 'array');
+		my $backupsetdata = Common::getDecBackupsetContents($bsf, 'array');
 		($processingreq, %notifsizes) = Common::getBackupsetFileSize($backupsetdata);
 
 		my $rid = '1007';
@@ -3057,11 +3197,8 @@ sub sendInitialFilesetUpdate {
 # Modified By			: Deepak Chaurasia
 #****************************************************************************************************/
 sub updateFileSetSize {
-	my %dirsizes = ();
 	my $backuptype = $_[0];
 	return 0 unless ($backuptype);
-
-	my $backupsizelock = Common::getBackupsetSizeLockFile($backuptype);
 
 	my $bsf = Common::getJobsPath($backuptype, 'file');
 	return 0 if (!-f $bsf || !-s $bsf);
@@ -3069,16 +3206,7 @@ sub updateFileSetSize {
 	my $forkpid = fork();
 	if ($forkpid == 0) {
 		$0 = 'IDrive:dashboard:fs';
-
-		my $calcforkpid = fork();
-		if ($calcforkpid == 0) {
-			$0 = 'IDrive:dashboard:cc';
-			Common::calculateBackupsetSize($backuptype, $selfPIDFile) unless (Common::isFileLocked($backupsizelock, 1));
-			exit(0);
-		}
-
-		push(@others, $calcforkpid) if ($calcforkpid);
-
+		Common::createJSSizeCalcReqByJobType($backuptype);
 		syncFilesetSizeOnIntervals($backuptype);
 	}
 
@@ -3260,6 +3388,7 @@ debug('watch for dashboard login ' . __LINE__);
 							$cmd = Common::updateLocaleCmd($cmd);
 							`$cmd`;
 							setUserConfiguration('BACKUPLOCATION', '');
+							setUserConfiguration('BACKUPLOCATIONSIZE', 0);
 							saveUserConfiguration(0, 1);
 							Common::stopDashboardService($AppConfig::mcUser, Common::getAppPath());
 							end();

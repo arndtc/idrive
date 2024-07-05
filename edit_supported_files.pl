@@ -10,9 +10,20 @@ use warnings;
 
 use lib map{if(__FILE__ =~ /\//) { substr(__FILE__, 0, rindex(__FILE__, '/'))."/$_";} else { "./$_"; }} qw(Idrivelib/lib);
 
+use Fcntl qw(:flock SEEK_END);
+
 use Common;
 use AppConfig;
 use File::Basename;
+
+eval {
+	require File::Copy;
+	File::Copy->import();
+};
+
+use File::stat;
+use POSIX;
+use POSIX ":sys_wait_h";
 
 Common::waitForUpdate();
 Common::initiateMigrate();
@@ -29,13 +40,28 @@ sub init {
 	system(Common::updateLocaleCmd('clear'));
 	Common::loadAppPath();
 	Common::loadServicePath() or Common::retreat('invalid_service_directory');
+	Common::verifyVersionConfig();
 	Common::loadUsername() or Common::retreat('login_&_try_again');
 	my $errorKey = Common::loadUserConfiguration();
 	Common::retreat($AppConfig::errorDetails{$errorKey}) if($errorKey > 1);
 	Common::isLoggedin() or Common::retreat('login_&_try_again');
 
 	Common::displayHeader();
+
 	Common::checkAccountStatus(1);
+
+	my $hasnotif = Common::hasFileNotifyPreReq();
+	unless(Common::isCDPWatcherRunning()) {
+		Common::display(['cdp_service_not_running', '.']) if($hasnotif);
+		Common::startCDPWatcher(1);
+		if($hasnotif) {
+			# Watcher has to start the job. client takes sometime to start
+			Common::isCDPWatcherRunning()? Common::display(['cdp_service_started', '.']) : Common::display(['failed_to_start_cdp_service', '.']);
+		}
+	}
+
+	# Handle manual script update. If aborted at account settings login, migration won't happen.
+	Common::fixBackupsetDeprecations();
 
 	my ($continueMenu, $menuUserChoice, $editFilePath, $maxMenuChoice) = ('y', 0, '', 0);
 	my (%menuToPathMap, $fileType);
@@ -56,6 +82,7 @@ sub init {
 					next;
 				}
 			}
+
 			$editFilePath   = Common::getUserFilePath($AppConfig::excludeFilesSchema{$menuToPathMap{$menuUserChoice}}{'file'});
 			$fileType  = $AppConfig::excludeFilesSchema{$menuToPathMap{$menuUserChoice}}{'title'};
 		}
@@ -69,67 +96,60 @@ sub init {
 				next;
 			}
 
-			my $editFilePathPid = Common::getJobsPath($menuToPathMap{$menuUserChoice}).$AppConfig::pidFile;
-			if(-e $editFilePathPid){
+			my $editFilePathPid = Common::getJobsPath($menuToPathMap{$menuUserChoice}) . $AppConfig::pidFile;
+			if(-f $editFilePathPid) {
 				open(my $fh, ">>", $editFilePathPid) or return 0;
-				unless (flock($fh, 2|4)) {
-					Common::display(["\n",$menuToPathMap{$menuUserChoice}.'_in_progress_try_again']);
-					Common::display(["\n",'do_you_want_to_edit_any_other_files_yn']);
+				unless (flock($fh, LOCK_EX|LOCK_NB)) {
+					Common::display(["\n", $menuToPathMap{$menuUserChoice} . '_in_progress_try_again']);
+					Common::display(["\n", 'do_you_want_to_edit_any_other_files_yn']);
 					$continueMenu = Common::getAndValidate(['enter_your_choice'], "YN_choice", 1);
-					($continueMenu eq 'y')?	next:exit;
-				}else{
-					flock($fh, 8);
+					($continueMenu eq 'y')?	next : exit;
+				} else {
+					unlink($editFilePathPid);
 				}
 			}
 
 			$editFilePath = Common::getJobsPath($menuToPathMap{$menuUserChoice}, 'file');
 			$fileType = $menuToPathMap{$menuUserChoice};
 		}
-		if($fileType eq 'restore') {
+
+		if($fileType eq 'localrestore') {
+            $AppConfig::jobType	= "LocalRestore";
+			getMountPointAndVerifyDB();
+			# (-f $editFilePath)? Common::openEditor('edit', $editFilePath, $fileType) : Common::display(['unable_to_open', '. ', 'invalid_file_path', ' ', '["', $editFilePath, '"]']);
+		} elsif($fileType eq 'restore') {
 			Common::editRestoreFromLocation();
 			Common::saveUserConfiguration() or Common::retreat('failed_to_save_user_configuration');
 		}
-		(-f $editFilePath)? Common::openEditor('edit', $editFilePath, $fileType) : Common::display(['unable_to_open', '. ', 'invalid_file_path', ' ', '["', $editFilePath, '"]']);
+
+		# create jobset file if missing, incase of permission issues it may fail to create and will be handled from the below condition
+		Common::fileWrite($editFilePath, '') unless(-f $editFilePath);
+
+		if(-f $editFilePath) {
+			if($menuToPathMap{$menuUserChoice} eq 'backup' || $menuToPathMap{$menuUserChoice} eq 'localbackup') {
+				my $oldbkpsetfile	= qq($editFilePath$AppConfig::backupextn);
+				copy($editFilePath, $oldbkpsetfile);
+
+				my $transfile		= Common::getCatfile(dirname($editFilePath), $AppConfig::transBackupsetFile);
+				my $transcont		= Common::getDecBackupsetContents($editFilePath);
+
+				Common::fileWrite($transfile, $transcont);
+				$editFilePath		= $transfile;
+			}
+
+			Common::openEditor('edit', $editFilePath, $fileType);
+			unlink($editFilePath) if (-f $editFilePath && $fileType =~ /backup/i);
+		} else {
+			Common::display(['unable_to_open', '. ', 'invalid_file_path', ' ', '["', $editFilePath, '"]']);
+		}
 
 		if ($menuToPathMap{$menuUserChoice} =~ '_exclude') {
 			Common::updateExcludeFileset($editFilePath, $menuToPathMap{$menuUserChoice});
-			calculateJobsetSize('backup');
-			calculateJobsetSize('localbackup');
-		}
-		else {
-			Common::updateJobsFileset($editFilePath, $menuToPathMap{$menuUserChoice});
-			calculateJobsetSize($menuToPathMap{$menuUserChoice}) if($menuToPathMap{$menuUserChoice} eq 'backup' || $menuToPathMap{$menuUserChoice} eq 'localbackup');
+			Common::createJobSetExclDBRevRequest((split("_exclude", $menuToPathMap{$menuUserChoice}))[0]);
 		}
 
 		Common::display(['do_you_want_to_edit_any_other_files_yn']);
-		$continueMenu = Common::getAndValidate(['enter_your_choice'], "YN_choice", 1);
-	}
-}
-
-#*****************************************************************************************************
-# Subroutine			: calculateJobsetSize
-# Objective				: Helps calculate backupset size
-# Added By				: Sabin Cheruvattil
-#****************************************************************************************************/
-sub calculateJobsetSize {
-	my $backupsizelock = Common::getBackupsetSizeLockFile($_[0]);
-	return 0 if(Common::isFileLocked($backupsizelock));
-
-	my $calcforkpid = fork();
-	if($calcforkpid == 0) {
-		$0 = 'IDrive:esf:szcal';
-		Common::calculateBackupsetSize($_[0]);
-		while(1) {
-			if (Common::isFileLocked($backupsizelock)) {
-				sleep(1);
-			}
-			else {
-				last;
-			}
-		}
-
-		Common::loadNotifications() and Common::setNotification(sprintf("get_%sset_content", $_[0])) and Common::saveNotifications();
-		exit(0);
+		$continueMenu = Common::getAndValidate(['enter_your_choice'], "YN_choice", 1, 1);
 	}
 }
 
@@ -145,9 +165,10 @@ sub displayMenu {
 
 	tie (our %editFileOptions, 'Tie::IxHash',
 		'backup'         => ['backup'],
-		'express_backup' => ['localbackup'],
+		'local_backup'   => ['localbackup'],
 		'exclude'        => ['full_exclude', 'partial_exclude', 'regex_exclude'],
 		'restore'        => ['restore'],
+		'local_restore'  => ['localrestore'],
 	);
 
 	Common::display(['menu_options_title', ':', "\n"]);
@@ -163,3 +184,67 @@ sub displayMenu {
 
 	return $opIndex - 1;
 }
+
+#*****************************************************************************************************
+# Subroutine			: getMountPointAndVerifyDB
+# Objective				: This function will get mount point & verify the DB
+# Added By				: Senthil Pandian
+#****************************************************************************************************/
+sub getMountPointAndVerifyDB {
+	my $username    = Common::getUsername();
+	my $dedup  	    = Common::getUserConfiguration('DEDUP');
+	my $mountedPath = Common::getMountedPathForRestore();
+	$AppConfig::localMountPath	= $mountedPath;
+	Common::checkPidAndExit(); #Checking pid if process cancelled by job termination
+
+	my $expressLocalDir = Common::getCatfile($mountedPath, ($AppConfig::appType . 'Local'));
+	my $localUserPath   = Common::getCatfile($expressLocalDir, $username);
+=beg
+	my $ldbNewDirPath	= Common::getCatfile($localUserPath, $AppConfig::ldbNew);
+	unless(-d $ldbNewDirPath or ($dedup eq 'on' and !-e $localUserPath."/".$AppConfig::dbPathsXML)){
+		Common::startDBReIndex($mountedPath);
+	}
+	if($dedup eq 'on' and !-e $localUserPath."/".$AppConfig::dbPathsXML) {
+		Common::retreat(['mount_point_doesnt_have_user_data',"\n"]);
+	}
+=cut
+
+	Common::setUserConfiguration('LOCALRESTOREMOUNTPOINT', $mountedPath);
+	Common::saveUserConfiguration() or Common::retreat('failed_to_save_user_configuration');
+
+    if ($dedup eq 'on') {
+		my @backupLocationDir = Common::getUserBackupDirListFromMountPath($localUserPath);
+		if(scalar(@backupLocationDir)>0) {
+			Common::checkAndCreateDBpathXMLfile($localUserPath, \@backupLocationDir);
+		}
+	}
+	Common::editLocalRestoreFromLocation();
+
+    my $serverRoot = '';
+	if($dedup eq 'on'){
+		$serverRoot = Common::getUserConfiguration('LOCALRESTORESERVERROOT');
+	}
+
+	my $restoreFrom  = ($dedup eq 'on')?$serverRoot:Common::getUserConfiguration('LOCALRESTOREFROM');
+	my $backedUpData = Common::getCatfile($localUserPath, $restoreFrom);
+
+    if(!-d $backedUpData){
+        $restoreFrom  = Common::getUserConfiguration('LOCALRESTOREFROM');
+        my $error = Common::getStringConstant('local_restore_from_doesnt_have_data');
+        $error =~ s/<DATA>/$restoreFrom/; 
+		Common::retreat($error);
+	}
+
+=beg
+	my $databaseLB  = Common::getExpressDBPath($mountedPath,$serverRoot);
+	if(!-f $databaseLB){
+		Common::startDBReIndex($mountedPath);
+	}
+
+	if(!-e $databaseLB){
+		Common::retreat('No database');
+	}
+=cut
+
+}
+

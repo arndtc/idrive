@@ -28,6 +28,9 @@ $SIG{KILL} = \&cleanUp;
 $SIG{USR1} = \&cleanUp;
 my $isAccountConfigured = 0;
 
+# handle fedora 34 package missing
+checkFedora34Packages() if(isFedora34());
+
 Common::waitForUpdate();
 Common::initiateMigrate();
 init();
@@ -36,10 +39,15 @@ init();
 # Subroutine			: init
 # Objective				: This function is entry point for the script
 # Added By				: Yogesh Kumar
-# Modified By			: Anil Kumar [25/04/2018], Vijay Vinoth, Senthil Pandian
-#****************************************************************************************************/
+# Modified By			: Anil Kumar [25/04/2018], Sabin Cheruvattil, Vijay Vinoth, Senthil Pandian
+#*****************************************************************************************************
 sub init {
-	system(Common::updateLocaleCmd("clear")) and Common::retreat('failed_to_clear_screen');
+	$AppConfig::isautoinstall = 1 if(defined($ARGV[0]) && $ARGV[0] eq $AppConfig::autoinstall);
+
+	unless($AppConfig::isautoinstall) {
+		system("clear") and Common::retreat('failed_to_clear_screen');
+	}
+
 	Common::loadAppPath();
 	my $localeMvCmd = '';
 
@@ -50,25 +58,42 @@ sub init {
 		Common::retreat('your_hostname_is_empty');
 	}
 
+	my $autoproxy = (defined($ARGV[1]) && $ARGV[1])? $ARGV[1] : '';
+
+	Common::display(['setting_up_your_app_account', '...']) if($AppConfig::isautoinstall);
+
 	# If unable to load service path then take service path from user and create meta data for it
 	unless (Common::loadServicePath()) {
 		Common::displayHeader();
 		processZIPPath();
-		Common::findDependencies() or Common::retreat('failed');
 
-		Common::display(["\n", 'please_provide_your_details_below',"\n"],1);
+		Common::display(["\n", 'please_provide_your_details_below', "\n"], 1) unless($AppConfig::isautoinstall);
 		unless (Common::checkAndUpdateServicePath()) {
 			Common::createServiceDirectory();
 		}
+
+		Common::createVersionCache($AppConfig::version) if(!-f Common::getVersionCachePath());
 	}
 	else {
 		Common::loadUsername() and Common::loadUserConfiguration();
 		Common::displayHeader();
 		Common::unloadUserConfigurations();
 		processZIPPath();
-		Common::findDependencies() or Common::retreat('failed');
-		Common::display(["\n",'your_service_directory_is',Common::getServicePath()]);
+
+		unless($AppConfig::isautoinstall) {
+			Common::display(["\n", 'your_service_directory_is',Common::getServicePath()]);
+		} else {
+			Common::display(['default_service_directory_path', ': ', Common::getServicePath()]);
+		}
 	}
+
+    # Fetching & verifying OS & build version
+    Common::getOSBuild(1);
+
+    Common::checkInstallDBCDPPreRequisites();
+
+	my $confexists = 0;
+	$confexists = 1 if(-f Common::getUserFile() or -f Common::getOldUserFile());
 
 	# Display machine hardware details
 	Common::display(["\n", 'hardware_platform', '... '], 0);
@@ -77,26 +102,66 @@ sub init {
 	Common::display($mcarc . "\n");
 
 	# validate existing EVS binary or download compatible one
-	my $isProxy=0;
+	my $isProxy = 0;
 	my %proxyDetails ;
-	if (!Common::hasEVSBinary() or ($AppConfig::appType eq 'IDrive' and !Common::hasStaticPerlBinary())) {
-		if (defined($ARGV[0])){
+	my $nl = 0;
+	if (!Common::hasEVSBinary() or ($AppConfig::appType eq 'IDrive' and (Common::hasStaticPerlSupport() and !Common::hasStaticPerlBinary())) or
+			!Common::hasPythonBinary()) {
+		if (defined($ARGV[0]) and !$AppConfig::isautoinstall) {
 			getDependentBinaries();
 		}
 		else {
 			# If user name provided is not configured then ask proxy details
 			Common::loadUserConfiguration();
-			Common::askProxyDetails() or Common::retreat('kindly_verify_ur_proxy');
-			unless (Common::hasEVSBinary()) {
-				Common::display(['downloading_evs_binary', '... ']);
-				Common::downloadEVSBinary() or Common::retreat('unable_to_download_evs_binary');
-				Common::display('evs_binary_downloaded_successfully');
+
+			if ($AppConfig::isautoinstall and $autoproxy) {
+				Common::askProxyDetails($autoproxy) or Common::retreat('kindly_verify_ur_proxy');
 			}
+			elsif (!$AppConfig::isautoinstall) {
+				Common::askProxyDetails() or Common::retreat('kindly_verify_ur_proxy');
+			}
+
+			unless (Common::hasEVSBinary()) {
+				$nl = 1;
+				unless($AppConfig::isautoinstall) {
+					Common::display(['downloading_evs_binary', '... ']);
+				}
+				else {
+					Common::display(['downloading_auto_evs_binary', '... '], 0);
+				}
+
+				Common::downloadEVSBinary() or Common::retreat('unable_to_download_evs_binary');
+				unless($AppConfig::isautoinstall) {
+					Common::display('evs_binary_downloaded_successfully');
+				}
+				else {
+					Common::display('ok_c');
+				}
+			}
+
+			unless (Common::hasPythonBinary()) {
+				Common::display(['downloading_python_binary', '... ']);
+				Common::downloadPythonBinary() or Common::retreat('unable_to_download_python_binary');
+				Common::display('python_binary_downloaded_successfully');
+			}
+
 			if ($AppConfig::appType eq 'IDrive') {
 				if (Common::hasStaticPerlSupport() and not Common::hasStaticPerlBinary()) {
-					Common::display(['downloading_static_perl_binary', '... ']);
+					$nl = 1;
+					unless($AppConfig::isautoinstall) {
+						Common::display(['downloading_static_perl_binary', '... ']);
+					}
+					else {
+						Common::display(['downloading_auto_static_perl_binary', '... '], 0);
+					}
+
 					Common::downloadStaticPerlBinary() or Common::retreat('unable_to_download_static_perl_binary');
-					Common::display(['static_perl_binary_downloaded_successfully',"\n"]);
+					unless($AppConfig::isautoinstall) {
+						Common::display(['static_perl_binary_downloaded_successfully',"\n"]);
+					}
+					else {
+						Common::display('ok_c');
+					}
 				}
 				%proxyDetails = Common::getUserConfiguration('dashboard');
 			}
@@ -108,32 +173,45 @@ sub init {
 	#Commented & modified by Senthil for Yuvaraj_2.12_2_1 on 21-Mar-2019
 	Common::loadEVSBinary() or Common::retreat('unable_to_find_compatible_evs_binary');
 
+	Common::display('') if ($nl and $AppConfig::isautoinstall);
+
+	if (!$AppConfig::isautoinstall) {
+		Common::askProxyDetails() unless (Common::getProxyStatus());
+	}
+	elsif ($AppConfig::isautoinstall and $autoproxy) {
+		Common::askProxyDetails($autoproxy) unless (Common::getProxyStatus());
+	}
+
+	# SSO login.
+	Common::display(["please_choose_the_method_to_authenticate_your_account", ":"]);
+	my @options = (
+		'idrive_login',
+		'sso_login',
+	);
+	Common::displayMenu('', @options);
+	my $loginType = Common::getUserMenuChoice(scalar(@options));
+
 	# Get user name and validate
 	my $uname = Common::getAndValidate(['enter_your', " ", $AppConfig::appType, " ", 'username', ': '], "username", 1);
 	$uname = lc($uname); #Important
 	my $emailID = $uname;
 
-	# Get password and validate
-	my $upasswd = Common::getAndValidate(['enter_your', " ", $AppConfig::appType, " ", 'password', ': '], "password", 0);
-
 	Common::setUsername($uname);
 
 	my $errorKey = Common::loadUserConfiguration();
 
-	# If this account is not configured then prompt for proxy
-	Common::askProxyDetails() if($errorKey != 1 and !$isProxy);
-
 	#validate user account
-	Common::display('verifying_your_account_info', 1);
+	#Common::display('verifying_your_account_info', 1);
 
 	# Get IDrive/IBackup username list associated with email address
-	($uname,$upasswd) = Common::getUsernameList($uname, $upasswd) if(Common::isValidEmailAddress($uname));
+	$uname = Common::getUsernameList($uname) if (Common::isValidEmailAddress($uname));
 
 	$errorKey = Common::loadUserConfiguration();
 	$isAccountConfigured = ($errorKey == 1 or $errorKey == 100) ? 1 : 0;
 
 	# validate IDrive user details
-	my @responseData = Common::authenticateUser($uname, $upasswd, $emailID) or Common::retreat(['failed_to_authenticate_user',"'$uname'."]);
+	my @responseData = Common::authenticateUser($uname, $emailID, 0, $loginType) or Common::retreat(['failed_to_authenticate_user',"'$uname'."]);
+	my $upasswd = $responseData[0]->{'p'};
 
 	Common::loadUsername();
 	my $loggedInUser = Common::getUsername() || $uname;
@@ -146,26 +224,53 @@ sub init {
 			cleanUp();
 			return;
 		}
+		Common::stopDashboardService($AppConfig::mcUser, Common::getAppPath());
 	}
 
+	my $isLoggedin = Common::isLoggedin(); #Kept here for Harish_2.3_10_3: Senthil
+
+	# check crontab validity
+	unless(Common::checkCrontabValidity()) {
+		Common::display(['corrupted_crontab_found', '.']);
+		Common::display(['do_you_want_to_continue_yn']);
+		my $resetchoice = Common::getAndValidate(['enter_your_choice'], 'YN_choice', 1);
+
+		exit(0) if ($resetchoice ne 'y');
+
+		Common::traceLog('Crontab corrupted. Resetting:');
+		Common::traceLog(Common::getFileContents(Common::getCrontabFile()));
+
+		Common::fileWrite(Common::getCrontabFile(), '');
+		Common::addBasicUserCRONEntires();
+	}
+
+	processManualUpdate($confexists);
+
+	my $accswitch = 0;
 	if($AppConfig::appType eq 'IDrive') {
-		Common::loadCrontab(1);
-		my $ce  = Common::getCrontab($AppConfig::dashbtask, $AppConfig::dashbtask, '{cmd}');
-		unless (!$ce || $ce eq '') {
-			my $cip = Common::getScript($AppConfig::dashbtask);
-			unless ($ce eq $cip) {
-				Common::display(["\n", 'Linux user', ' "', $AppConfig::mcUser, '" ', 'is_already_having_active_setup_path', ' ', '"' . dirname($ce) . '"', '. '], 0);
+		Common::loadCrontab();
+		my $ct = Common::getCrontab();
+		my $ce = Common::getCurrentUserDashBdConfPath($ct, $AppConfig::mcUser, $uname);
+
+		if ($ce and $ce ne '') {
+			my $cip = Common::getDashboardScript();
+            my $dsp = Common::getScriptPathOfDashboard($ce);
+            my $csp = Common::getScriptPathOfDashboard($cip);
+
+        	if ($ce ne $cip and $dsp ne $csp) {
+				Common::display(["\n", 'Linux user', ' "', $AppConfig::mcUser, '" ', 'is_already_having_active_setup_path', ' ', '"' . $dsp . '"', '. '], 0);
 				Common::display(["\n",'config_same_user_will_del_old_schedule', ' '], 0);
 				Common::display([ 'do_you_want_to_continue_yn']);
 				my $resetchoice = Common::getAndValidate(['enter_your_choice'], "YN_choice", 1);
 
 				# user doesn't want to reset the dashboard job, check and start dashboard job
 				exit(0) if ($resetchoice eq 'n');
-
+				$accswitch = 1;
 				# Common::unloadUserConfigurations(); #Commented by Senthil : 17-Sep-2019
 			}
 		}
 	}
+
 	Common::setUsername($uname);
 	# Section to switch user - End
 
@@ -175,10 +280,12 @@ sub init {
 			Common::deactivateOtherUserCRONEntries($uname);
 			Common::updateUserLoginStatus($uname, 0);
 		}
+		else {
+			Common::updateUserLoginStatus($uname, 0, 1);
+		}
 
-		Common::setUserConfiguration(\%proxyDetails);
 		Common::setUserConfiguration('USERNAME', $uname);
-		Common::createUserDir() unless($isAccountConfigured);
+		Common::createUserDir($isAccountConfigured); #unless($isAccountConfigured); Commented by Senthil to create dir for Local Restore
 		Common::saveUserQuota(@responseData) or Common::retreat("Error in save user quota");
 		Common::saveServerAddress(@responseData);
 		Common::setUserConfiguration(@responseData);
@@ -233,13 +340,15 @@ sub init {
 			# Common::createUTF8File('DEFAULTCONFIG') or Common::retreat('failed_to_create_utf8_file');
 		}
 
-		Common::configAccount($configType,$encKey);
+		Common::configAccount($configType, $encKey);
 		Common::setUserConfiguration('ENCRYPTIONTYPE', $configType);
-		Common::display(['encryption_key_is_set_successfully',"\n"],1);
+		Common::display(['encryption_key_is_set_successfully', "\n"], 1);
 		$isAccountConfigured = 0;
 		if (-e Common::getUserConfigurationFile()) {
 			Common::setUserConfiguration('BACKUPLOCATION', "");
+			Common::setUserConfiguration('BACKUPLOCATIONSIZE', 0);
 			Common::setUserConfiguration('RESTOREFROM', "");
+			Common::createBackupStatRenewalByJob('backup') if(Common::getUsername() ne '' && Common::getLoggedInUsername() eq Common::getUsername());
 		}
 	}
 	elsif (Common::getUserConfiguration('ENCRYPTIONTYPE') eq 'PRIVATE') {
@@ -278,7 +387,7 @@ sub init {
 				Common::retreat('invalid_enc_key');
 			}
 			elsif ($responseData[0]->{'MSG'} =~ /$AppConfig::proxyNetworkError/i) {
-			#elsif ($responseData[0]->{'MSG'} =~ /Could not resolve proxy|Failed to connect to .* port [0-9]+: Connection refused|Connection timed out|response code said error|407 Proxy Authentication Required|execution_failed|kindly_verify_ur_proxy|No route to host|Could not resolve host/) {}
+			#elsif ($responseData[0]->{'MSG'} =~ /Could not resolve proxy|Failed to connect to .* port [0-9]+: Connection refused|Connection timed out|response code said error|407 Proxy Authentication Required|execution_failed|kindly_verify_ur_proxy|No route to host|Could not resolve host/) {
 				if ($isAccountConfigured and !$needToRetry){
 					if (updateProxyOP()){
 						$needToRetry=1;
@@ -319,19 +428,67 @@ sub init {
 		}
 	}
 
+	# Added as per Deepak review comment : Senthil
+	if ($isAccountConfigured && (($loggedInUser ne $uname) || !$isLoggedin)) {
+		my $loginConfirmation = 'y';		
+		unless($AppConfig::isautoinstall) {
+			Common::display(["\n",'do_u_want_to_login_as', "\"$uname\"", ' (y/n)?'],1);
+			$loginConfirmation = Common::getAndValidate(['enter_your_choice'], "YN_choice", 1);
+            Common::display('',0);
+            if (lc($loginConfirmation) eq 'y' ) {
+                if ($loggedInUser ne "" && ($loggedInUser ne $uname)) {
+                    Common::updateCronForOldAndNewUsers($loggedInUser, $uname);
+                    Common::deactivateOtherUserCRONEntries($uname);
+                }
+
+                Common::updateUserLoginStatus($uname, 1) or Common::retreat('unable_to_login_please_try_login_script');
+                Common::setCDPInotifySupport();
+                Common::startCDPWatcher(1) unless(Common::isCDPServicesRunning());
+            }
+		}
+	}
+
 	verifyExistingBackupLocation();
 
 	Common::copy(Common::getIDPVTFile(), Common::getIDPVTSCHFile());
 	Common::changeMode(Common::getIDPVTSCHFile());
 
-	# Launch Cron service from here
+	# Launch CRON service from here
 	manageCRONLaunch();
 
-	# manage dashboard here
-	if ($AppConfig::appType eq 'IDrive') {
-		manageDashboardJob($uname);
+	if (-z Common::getCrontabFile() or $accswitch) {
+		Common::addBasicUserCRONEntires();
+		Common::resetUserCRONSchemas($accswitch);
 	}
 
+	# Add CDP watcher to CRON | it may just call in the next line | wont update if entry already present
+	Common::addCDPWatcherToCRON();
+	my ($dirswatch, $jsjobselems, $jsitems);
+	if ($isAccountConfigured) {
+		($dirswatch, $jsjobselems, $jsitems) = Common::getCDPWatchEntities();
+
+		unless(Common::getUserConfiguration('CDPSUPPORT')) {
+			Common::setCDPInotifySupport();
+		}
+	}
+
+	if(!Common::isCDPServicesRunning() or !Common::isCDPWatcherRunning()) {
+		my $msgdisp = ($isAccountConfigured and Common::getUserConfiguration('CDPSUPPORT') and scalar(@{$dirswatch}))? 1 : 0;
+		Common::display(['starting_cdp_services', '...']) if($msgdisp);
+		Common::restartAllCDPServices();
+		if($msgdisp) {
+			Common::isCDPWatcherRunning()? Common::display(['cdp_service_started', '.']) : Common::display(['failed_to_start_cdp_service', '.']);
+		}
+	}
+
+	if ((Common::getUserConfiguration('DELCOMPUTER') eq 'D_1') or (Common::getUserConfiguration('DELCOMPUTER') eq '')) {
+			Common::setUserConfiguration('DELCOMPUTER', 'S_1');
+			Common::saveUserConfiguration(0);
+	}
+	# manage dashboard here
+	manageDashboardJob($accswitch) if ($AppConfig::appType eq 'IDrive');
+
+	my $needsbasecron = 0;
 	if ($isAccountConfigured) {
 		Common::display(["\n",'your_account_details_are', ":\n"]);
 		Common::display([
@@ -339,24 +496,29 @@ sub init {
 			"\t","backup_location_lc", (' ' x 33), ': ',
 			((Common::getUserConfiguration('DEDUP') eq 'on') and index(Common::getUserConfiguration('BACKUPLOCATION'), '#') != -1 )? (split('#', (Common::getUserConfiguration('BACKUPLOCATION'))))[1] :  Common::getUserConfiguration('BACKUPLOCATION'),"\n",
 			(Common::getUserConfiguration('DEDUP') eq 'off')? ("\t",'backup_type', (' ' x 37), ': ', Common::getUserConfiguration('BACKUPTYPE'),"\n"): "",
+			(Common::canKernelSupportInotify()? ("\t", 'backupset_rescan_interval', (' ' x 23),       ': ', getCDPRescanInterval(), "\n") : ''),
 			"\t",'bandwidth_throttle', (' ' x 27),     ': ', Common::getUserConfiguration('BWTHROTTLE'),"\n",
 			"\t",'edit_failed_backup_per', (' ' x 33), ': ', Common::getUserConfiguration('NFB'), "\n",
+			"\t",'ignore_permission_denied', (' ' x 7),': ', Common::colorScreenOutput(Common::getUserConfiguration('IFPE')? 'enabled' : 'disabled'), "\n",
 			"\t",'edit_missing_backup_per', (' ' x 32),': ', Common::getUserConfiguration('NMB'), "\n",
+			# "__title_cdp__","\n",
+			# "\t", 'cdp_title', (' ' x 45),       ': ', (Common::getUserConfiguration('CDP')? 'enabled' : 'disabled'), "\n",
+			"\t",'show_hidden_files', (' ' x 23),      ': ', Common::colorScreenOutput(Common::getUserConfiguration('SHOWHIDDEN')? 'enabled' : 'disabled'), "\n",
+			"\t",'upload_multiple_chunks', (' ' x 6),  ': ', Common::colorScreenOutput((Common::getUserConfiguration('ENGINECOUNT') != $AppConfig::minEngineCount)? 'enabled' : 'disabled'),"\n",
 			"__title_general_settings__","\n",
-			],0);
-		if (($AppConfig::appType eq 'IDrive') and (Common::getUserConfiguration('RMWS') ne 'yes')) {
+		],0);
+
+		if($AppConfig::appType eq 'IDrive' and (Common::getUserConfiguration('RMWS') ne 'yes')){
 			Common::display([
 			"\t",'desktop_access', (' ' x 34),         ': ', Common::colorScreenOutput(Common::getUserConfiguration('DDA')? 'disabled' : 'enabled')]);
 		}
-		Common::display(["\t",'title_email_address', (' ' x 34),    ': ', editEmailsToDisplay(),"\n",
-			"\t",'ignore_permission_denied', (' ' x 7),': ', Common::colorScreenOutput(Common::getUserConfiguration('IFPE')? 'enabled' : 'disabled'), "\n",
+
+		Common::display([
+			"\t",'title_email_address', (' ' x 34),    ': ', editEmailsToDisplay(),"\n",
 			"\t",'edit_proxy', (' ' x 35),             ': ', editProxyToDisplay(),"\n",
 			#"\t",'retain_logs', (' ' x 37),            ': ', (Common::getUserConfiguration('RETAINLOGS')? 'enabled' : 'disabled'), "\n",
 			"\t",'edit_service_path', (' ' x 36),      ': ', Common::getServicePath(), "\n",
-			"\t",'show_hidden_files', (' ' x 23),      ': ', Common::colorScreenOutput(Common::getUserConfiguration('SHOWHIDDEN')? 'enabled' : 'disabled'), "\n",
 			"\t",'notify_software_update', (' ' x 20), ': ', Common::colorScreenOutput(Common::getUserConfiguration('NOTIFYSOFTWAREUPDATE')? 'enabled' : 'disabled'), "\n",
-			"\t",'upload_multiple_chunks', (' ' x 6),  ': ', Common::colorScreenOutput((Common::getUserConfiguration('ENGINECOUNT') == $AppConfig::maxEngineCount)? 'enabled' : 'disabled'),
-			"\n",
 			"__title_restore_settings__","\n",
 			"\t",'restore_from_location', (' ' x 27), ': ',
 			((Common::getUserConfiguration('DEDUP') eq 'on') and index(Common::getUserConfiguration('RESTOREFROM'), '#') != -1 )? (split('#', (Common::getUserConfiguration('RESTOREFROM'))))[1] :  Common::getUserConfiguration('RESTOREFROM'),
@@ -365,9 +527,21 @@ sub init {
 			"\t",'restore_loc_prompt', (' ' x 25),     ': ', Common::colorScreenOutput(Common::getUserConfiguration('RESTORELOCATIONPROMPT')? 'enabled' : 'disabled'), "\n",
 			"__title_services__",
 		]);
-		if($AppConfig::appType eq 'IDrive'){
+
+		my $cdpstat = '';
+		unless(Common::canKernelSupportInotify()) {
+			$cdpstat = Common::colorScreenOutput('c_stopped');
+		} else {
+			$cdpstat = Common::colorScreenOutput(Common::isCDPWatcherRunning() and Common::hasFileNotifyPreReq()? 'c_running' : 'c_stopped');
+		}
+		
+		Common::display([
+			"\t", 'app_cdp_service', (' ' x 37),       ': ', $cdpstat,
+		]);
+
+		if($AppConfig::appType eq 'IDrive') {
 			Common::display([
-				"\t",'app_dashboard_service', (' ' x 31),  ': ', Common::colorScreenOutput((Common::isUserDashboardRunning($loggedInUser))? 'c_running' : 'c_stopped'), (Common::getUserConfiguration('DDA') ? 'c_disabled' : ''),"\n",
+				"\t",'app_dashboard_service', (' ' x 31),  ': ', Common::colorScreenOutput((Common::isUserDashboardRunning($uname))? 'c_running' : 'c_stopped'), (Common::getUserConfiguration('DDA') ? 'c_disabled' : ''),"\n",
 				"\t",'app_cron_service', (' ' x 29),       ': ', Common::colorScreenOutput((Common::checkCRONServiceStatus() == Common::CRON_RUNNING)? 'c_running' : 'c_stopped'), "\n",
 			]);
 		}
@@ -377,10 +551,12 @@ sub init {
 			]);
 		}
 
+		Common::createVersionCache($AppConfig::version);
+
 		my $confmtime = stat(Common::getUserConfigurationFile())->mtime;
 		#display user configurations and edit/reset options.
 		tie(my %optionsInfo, 'Tie::IxHash',
-			're_configure_your_account_freshly' => sub { $isAccountConfigured = 0; },
+			're_configure_your_account_freshly' => sub { $isAccountConfigured = 0; $needsbasecron = 1; },
 			'edit_your_account_details' => sub { editAccount($loggedInUser, $confmtime); },
 			'exit' => sub {
 				if ((Common::getUserConfiguration('DELCOMPUTER') eq 'D_1') or (Common::getUserConfiguration('DELCOMPUTER') eq '')) {
@@ -407,13 +583,15 @@ sub init {
 		}
 	}
 
+	Common::addBasicUserCRONEntires() if($needsbasecron);
 	my $status = 0;
 	unless ($isAccountConfigured) {
 		$status = Common::setBackupToLocation();
 		Common::retreat('failed_to_set_backup_location') unless ($status);
+		Common::setRestoreLocation() or Common::retreat('failed_to_set_restore_location');
+		Common::display('') if($AppConfig::isautoinstall);
+		Common::setRestoreFromLocation() or Common::retreat('failed_to_set_restore_from');
 
-		Common::setRestoreLocation()      or Common::retreat('failed_to_set_restore_location');
-		Common::setRestoreFromLocation()  or Common::retreat('failed_to_set_restore_from');
 		unless ($status == 2) {
 			Common::setRestoreFromLocPrompt(1)or Common::retreat('failed_to_set_restore_from_prompt');
 			Common::setNotifySoftwareUpdate() or Common::retreat('failed_to_set_software_update_notification');
@@ -425,22 +603,29 @@ sub init {
 		installUserFiles()                 or Common::retreat('failed_to_install_user_files');
 	}
 
+	Common::createVersionCache($AppConfig::version);
+
 	if ((Common::getUserConfiguration('DELCOMPUTER') eq 'D_1') or (Common::getUserConfiguration('DELCOMPUTER') eq '')) {
 		Common::setUserConfiguration('DELCOMPUTER', 'S_1');
 	}
 
-	Common::saveUserConfiguration((($status ==2) ? 0 : 1)) or Common::retreat('failed_to_save_user_configuration');
-
+	Common::saveUserConfiguration((($status == 2) ? 0 : 1)) or Common::retreat('failed_to_save_user_configuration');
 	Common::checkAndUpdateClientRecord($uname,$upasswd);
+	Common::display(["\n", "\"$uname\""." is configured successfully. "], 0) unless($AppConfig::isautoinstall);
 
-	Common::display(["\n", "\"$uname\""." is configured successfully. "],0);
-
-	if (($loggedInUser eq $uname) and Common::isLoggedin()) {
-		Common::display(["\n\n","User ", "\"$uname\"", " is already logged in." ],1);
+	if (($loggedInUser eq $uname) and $isLoggedin) {
+		Common::display(["\n\n","User ", "\"$uname\"", " is already logged in." ], 1);
+		# If bucket is deleted dashboard logs out the user while running account settings
+		Common::updateUserLoginStatus($uname, 1);
 	}
 	else {
-		Common::display(['do_u_want_to_login_as', "\"$uname\"", ' (y/n)?'],1);
-		my $loginConfirmation = Common::getAndValidate(['enter_your_choice'], "YN_choice", 1);
+		my $loginConfirmation = 'y';
+		
+		unless($AppConfig::isautoinstall) {
+			Common::display(['do_u_want_to_login_as', "\"$uname\"", ' (y/n)?'],1);
+			$loginConfirmation = Common::getAndValidate(['enter_your_choice'], "YN_choice", 1);
+		}
+
 		if (lc($loginConfirmation) eq 'n' ) {
 			Common::updateUserLoginStatus($uname, 0);
 		}
@@ -450,8 +635,9 @@ sub init {
 				Common::deactivateOtherUserCRONEntries($uname);
 			}
 
-			Common::updateUserLoginStatus($uname, 1) or Common::retreat('unable_to_login_please_try_login_script');
-			#Common::display(['dashBoard_intro_notification']);
+			Common::updateUserLoginStatus($uname, 1, 1) or Common::retreat('unable_to_login_please_try_login_script');
+			Common::setCDPInotifySupport();
+			Common::startCDPWatcher(1) unless(Common::isCDPServicesRunning());
 		}
 	}
 
@@ -469,20 +655,126 @@ sub init {
 		}
 	}
 
+	if($AppConfig::isautoinstall) {
+		Common::display(['scripts_are_setup_and_ready_to_use', '.', "\n"]);
+		Common::display(['use_link_to_use_linux_web', '.']);
+		Common::display([$AppConfig::IDriveWebURL]);
+	}
+	
 	cleanUp();
+}
+
+#*****************************************************************************************************
+# Subroutine	: isFedora34
+# In Param		: UNDEF
+# Out Param		: UNDEF
+# Objective		: Checks if the current OS is Fedora 34 or not
+# Added By		: Sabin Cheruvattil
+# Modified By	: 
+#*****************************************************************************************************
+sub isFedora34 {
+	my $os = Common::getOSBuild();
+	return 1 if($os->{'os'} =~ 'fedora' and $os->{'build'} == 34);
+	return 0;
+}
+
+#*****************************************************************************************************
+# Subroutine	: getMissingPackages
+# In Param		: UNDEF
+# Out Param		: UNDEF
+# Objective		: Checks and collects the missing packages
+# Added By		: Sabin Cheruvattil
+# Modified By	: 
+#*****************************************************************************************************
+sub getMissingPackages {
+	my @stdPackages = keys(%{$_[0]});
+	my @missingPackages = ();
+
+	foreach my $pkg (@stdPackages) {
+		my $pkgExists = 0;
+		my $pmFile = $pkg;
+		$pmFile =~ s/::/\//;
+		$pmFile .= ".pm";
+
+		foreach my $incPath (@INC) {
+			my $pmPath = "$incPath/$pmFile";
+			 if(-f $pmPath) {
+				 $pkgExists = 1;
+				 last;
+			 }
+		}
+
+		push(@missingPackages, $pkg) if(!$pkgExists);
+	}
+
+	return \@missingPackages;
+}
+
+#*****************************************************************************************************
+# Subroutine	: checkFedora34Packages
+# In Param		: UNDEF
+# Out Param		: UNDEF
+# Objective		: Checks and processes package missing issue in fedora 34
+# Added By		: Sabin Cheruvattil
+# Modified By	: 
+#*****************************************************************************************************
+sub checkFedora34Packages {
+	my $missPacks = getMissingPackages(\%AppConfig::pmDNFPacksFed34);
+	return 0 if(!scalar @{$missPacks});
+
+	my @dnfPacks = map{$AppConfig::pmDNFPacksFed34{$_}} (@{$missPacks});
+
+	system("clear");
+	Common::loadAppPath();
+	Common::displayHeader();
+	
+	Common::display(["\n", 'unable_to_find_the_dependency_packages']);
+
+	for my $idx (0 .. $#dnfPacks) {
+		Common::display([$idx + 1, ') ', $dnfPacks[$idx]]);
+	}
+
+	Common::display(["\n", 'following_packages_installed_to_continue']);
+	my $userChoice = Common::getAndValidate(['enter_your_choice'], 'YN_choice', 1);
+
+	exit(0) if(lc($userChoice) eq 'n');
+
+	my $dnfcmd = "dnf -y install " . join(" ", @dnfPacks);
+	$dnfcmd = Common::getSudoSuCMD($dnfcmd, 'please_provide_root_pwd_for_init_packs');
+	system($dnfcmd);
+
+	# Again check for the missing packages
+	my $newMissPacks = getMissingPackages(\%AppConfig::pmDNFPacksFed34);
+	if(scalar @{$newMissPacks}) {
+		@dnfPacks = map{$AppConfig::pmDNFPacksFed34{$_}} (@{$missPacks});
+		$AppConfig::displayHeader = 0;
+		Common::retreat(['failed_to_install_following_packages', join(", ", @dnfPacks), '.']);
+	}
+
+	# load the missing packages
+	foreach my $missPack (@{$missPacks}) {
+		eval "use $missPack;";
+	}
+
+	# eval {
+		# delete $INC{'Common'};
+		# use Common;
+	# };
+
+	$AppConfig::displayHeader = 1;
+	return 1;
 }
 
 #*****************************************************************************************************
 # Subroutine			: verifyExistingBackupLocation
 # Objective				: This is to verify the whether the backup locations are available or not.
 # Added By				: Anil Kumar
-# Modified By			: Yogesh Kumar, Senthil Pandian
+# Modified By			: Yogesh Kumar, Senthil Pandian, Sabin Cheruvattil
 #****************************************************************************************************/
 sub verifyExistingBackupLocation {
 	if ($isAccountConfigured) {
-		#Common::display('verifying_your_account_info');
-
-		my $isDedup = Common::getUserConfiguration('DEDUP');
+		my $isDedup	= Common::getUserConfiguration('DEDUP');
+		my $qtf		= Common::getCachedStorageFile();
 		if ($isDedup eq 'on') {
 			my @result = Common::fetchAllDevices();
 			#Added to consider the bucket type 'D' only
@@ -494,7 +786,10 @@ sub verifyExistingBackupLocation {
 
 			unless (Common::findMyDevice(\@devices)) {
 				$isAccountConfigured = 0;
+				unlink($qtf) if(-f $qtf);
 				unlink(Common::getUserConfigurationFile()) if (-f Common::getUserConfigurationFile());
+				# If account reset happened or bucket got deleted and if dashboard didnt run
+				Common::createBackupStatRenewalByJob('backup') if(Common::getUsername() ne '' && Common::getLoggedInUsername() eq Common::getUsername());
 				return 0;
 			}
 			return 1;
@@ -521,7 +816,7 @@ sub verifyExistingBackupLocation {
 
 		my $itemStatusUTFpath = $jobRunningDir.'/'.$AppConfig::utf8File;
 		my $evsErrorFile      = $jobRunningDir.'/'.$AppConfig::evsErrorFile;
-		Common::createUTF8File(['ITEMSTATUS',$itemStatusUTFpath], $tempBackupsetFilePath, $evsErrorFile) or Common::retreat('failed_to_create_utf8_file');
+		Common::createUTF8File(['ITEMSTATUS',$itemStatusUTFpath], $tempBackupsetFilePath, $evsErrorFile,'') or Common::retreat('failed_to_create_utf8_file');
 
 		my @responseData = Common::runEVS('item');
 
@@ -531,16 +826,20 @@ sub verifyExistingBackupLocation {
 			open(FILE, $evsErrorFile);
 			if (grep{/failed to get the device information/} <FILE>){
 				$isAccountConfigured = 0;
-
-				unlink(Common::getUserConfigurationFile()) if (-e Common::getUserConfigurationFile());
+				unlink($qtf) if(-f $qtf);
+				unlink(Common::getUserConfigurationFile()) if (-f Common::getUserConfigurationFile());
+				Common::createBackupStatRenewalByJob('backup') if(Common::getUsername() ne '' && Common::getLoggedInUsername() eq Common::getUsername());
 			}
 			close FILE;
 		}
 		unlink($evsErrorFile);
+
 		if ($isDedup eq 'off'){
 			if ($responseData[0]{'status'} =~ /No such file or directory|directory exists in trash/) {
 				$isAccountConfigured = 0;
+				unlink($qtf) if(-f $qtf);
 				unlink(Common::getUserConfigurationFile()) if (-e Common::getUserConfigurationFile());
+				Common::createBackupStatRenewalByJob('backup') if(Common::getUsername() ne '' && Common::getLoggedInUsername() eq Common::getUsername());
 			}
 		}
 	}
@@ -550,14 +849,18 @@ sub verifyExistingBackupLocation {
 # Subroutine			: editProxyToDisplay
 # Objective				: Edit and format the proxy details in order to display the user accordingly.
 # Added By				: Anil Kumar
+# Modified By                           : Yogesh Kumar
 #****************************************************************************************************/
 sub editProxyToDisplay {
-	my $proxyValue = Common::getUserConfiguration('PROXY');
+	my $proxyValue = Common::getProxyDetails('PROXY');
 	if ($proxyValue ne "") {
 		my ($pwd) = $proxyValue =~ /:([^\s@]+)/;
 		$pwd = $pwd."@";
 		my $newPwd = "***@";
 		$proxyValue =~ s/$pwd/$newPwd/;
+		$proxyValue =~ s/^://;
+		$proxyValue =~ s/^@//;
+		$proxyValue = $proxyValue;
 	}
 	else{
 		$proxyValue = "No Proxy";
@@ -578,15 +881,46 @@ sub editEmailsToDisplay {
 }
 
 #*****************************************************************************************************
+# Subroutine			: getCDPRescanInterval
+# Objective				: This method gets the string to display the cdp rescan interval
+# Added By				: Sabin Cheruvattil
+#*****************************************************************************************************
+sub getCDPRescanInterval {
+	Common::loadCrontab(1);
+
+	my $jobname	= 'default_backupset';
+	my $h		= Common::getCrontab($AppConfig::cdprescan, $jobname, '{h}');
+	$h			= sprintf("%02d", $h) if($h =~ /\d/);
+
+	my $m		= Common::getCrontab($AppConfig::cdprescan, $jobname, '{m}');
+	$m			= sprintf("%02d", $m) if($m =~ /\d/);
+
+	my $cmd		= Common::getCrontab($AppConfig::cdprescan, $jobname, '{cmd}');
+	my $dom		= (split(' ', $cmd))[-2];
+
+	$dom		= '0' unless($dom);
+	$dom		= sprintf("%02d", $dom) if($dom =~ /\d/);
+
+	my $statmsg	= '';
+
+	if($dom eq '01') {
+		$statmsg	= Common::getLocaleString('daily_once') . " at $h:$m";
+	} else {
+		$statmsg	= Common::getLocaleString('once_in_x_days') . " at $h:$m";
+		$statmsg	=~ s/__/$dom/;
+	}
+
+	return $statmsg;
+}
+
+#*****************************************************************************************************
 # Subroutine			: processZIPPath
 # Objective				: This method checks and and verifies zip package if passed
 # Added By				: Sabin Cheruvattil
-#****************************************************************************************************/
+#*****************************************************************************************************
 sub processZIPPath {
 	# In case if user passed zip file of EVS binary.
-	if (defined($ARGV[0])) {
-		validateZipPath();
-	}
+	validateZipPath() if(defined($ARGV[0]) && !$AppConfig::isautoinstall);
 }
 
 #*****************************************************************************************************
@@ -598,35 +932,41 @@ sub processZIPPath {
 sub manageDashboardJob {
 	Common::loadCrontab(1);
 	my $curdashscript = Common::getCrontab($AppConfig::dashbtask, $AppConfig::dashbtask, '{cmd}');
+	if(!$_[0]) {
+		# account not configured | no cron tab entry | dashboard script empty
+		if (!$curdashscript || $curdashscript eq '') {
+			Common::createCrontab($AppConfig::dashbtask, $AppConfig::dashbtask);
+			Common::setCronCMD($AppConfig::dashbtask, $AppConfig::dashbtask);
+			Common::saveCrontab();
+			Common::checkAndStartDashboard(0);
+			return 1;
+		}
 
-	# account not configured | no cron tab entry | dashboard script empty
-	if (!$curdashscript || $curdashscript eq '') {
-		Common::createCrontab($AppConfig::dashbtask, $AppConfig::dashbtask);
-		Common::setCronCMD($AppConfig::dashbtask, $AppConfig::dashbtask);
-		Common::saveCrontab();
-		Common::checkAndStartDashboard(0);
-		return 1;
+		my $newdashscript = Common::getDashboardScript();
+		# check same path or not
+		if ($curdashscript eq $newdashscript) {
+			# lets handle dashboard job; check and start dashboard
+			return Common::checkAndStartDashboard(1);
+		}
+
+		# dashboard scripts are not the same. old path not valid | reset user's cron schemas to default
+		unless(-f $curdashscript) {
+			Common::resetUserCRONSchemas();
+			return Common::checkAndStartDashboard(0);
+		}
 	}
 
-	my $newdashscript = Common::getScript($AppConfig::dashbtask);
-	# check same path or not
-	if ($curdashscript eq $newdashscript) {
-		# lets handle dashboard job; check and start dashboard
-		return Common::checkAndStartDashboard(1);
-	}
-
-	# dashboard scripts are not the same. old path not valid | reset user's cron schemas to default
-	unless(-f $curdashscript) {
-		Common::resetUserCRONSchemas();
-		return Common::checkAndStartDashboard(0);
-	}
-
-	# reset all the schemes of the user
-	Common::resetUserCRONSchemas();
 	# kill the running dashboard job
-	Common::stopDashboardService($AppConfig::mcUser, dirname($curdashscript));
+	$curdashscript = dirname($curdashscript);
+	$curdashscript =~ s/$AppConfig::idriveLibPath//;
+	Common::stopDashboardService($AppConfig::mcUser, $curdashscript);
+
+	Common::createCrontab($AppConfig::dashbtask, $AppConfig::dashbtask);
+	Common::setCronCMD($AppConfig::dashbtask, $AppConfig::dashbtask);
+	Common::saveCrontab();
+
 	# kill all the running jobs belongs to this user
-	my $cmd = sprintf("%s %s 'allOp' %s 0 'allType'", $AppConfig::perlBin, Common::getScript('job_termination', 1), Common::getUsername());
+	my $cmd = sprintf("%s %s 'allOp' %s 0 'allType' %s %s", $AppConfig::perlBin, Common::getScript('job_termination', 1), Common::getUsername(), $AppConfig::mcUser, 'operation_cancelled_due_to_cron_reset');
 	$cmd = Common::updateLocaleCmd($cmd);
 	`$cmd 1>/dev/null 2>/dev/null`;
 	Common::checkAndStartDashboard(0);
@@ -639,23 +979,23 @@ sub manageDashboardJob {
 # Modified By			: Yogesh Kumar
 #****************************************************************************************************/
 sub manageCRONLaunch {
+	Common::removeFallBackCRONEntry() if($AppConfig::mcUser eq 'root');
+
 	unless(Common::checkCRONServiceStatus() == Common::CRON_RUNNING) {
 		Common::display(["\n", 'setting_up_cron_service', ' ', 'please_wait_title', '...']);
 		my $sudoprompt = 'please_provide_' . ((Common::isUbuntu() || Common::isGentoo())? 'sudoers' : 'root') . '_pwd_for_cron';
 		my $sudosucmd = Common::getSudoSuCRONPerlCMD('installcron', $sudoprompt);
-		$sudosucmd = Common::updateLocaleCmd($sudosucmd);
 		my $res = system($sudosucmd);
 
 		if (Common::checkCRONServiceStatus() == Common::CRON_RUNNING) {
 			Common::display(['cron_service_started',"\n"]);
 		}
 		else {
-			Common::display('unable_to_start_cron_service',0);
+			Common::display('unable_to_start_cron_service', 0);
 			Common::display('please_make_sure_you_are_sudoers_list') if($res);
 			Common::display("\n");
 		}
-		# Common::display([((Common::checkCRONServiceStatus() == Common::CRON_RUNNING)? 'cron_service_started' : 'unable_to_start_cron_service'), '.',"\n"]);
-		# Common::display('please_make_sure_you_are_sudoers_list') if($res);
+
 		return 1;
 	}
 
@@ -665,12 +1005,100 @@ sub manageCRONLaunch {
 	if (Common::versioncompare($AppConfig::version, $lockinfo[1]) == 1) {
 		my $sudoprompt = 'please_provide_' . ((Common::isUbuntu() || Common::isGentoo())? 'sudoers' : 'root') . '_pwd_for_cron_update';
 		my $sudosucmd = Common::getSudoSuCRONPerlCMD('restartidriveservices', $sudoprompt);
-		$sudosucmd = Common::updateLocaleCmd($sudosucmd);
 		my $res = system($sudosucmd);
-		Common::display(['failed_to_update_cron','please_make_sure_you_are_sudoers_list']) if($res);
+		if($res) {
+			Common::display(['failed_to_update_cron'], 0);
+			Common::display(['please_make_sure_you_are_sudoers_list']) if($AppConfig::mcUser ne 'root');
+		} else {
+			Common::display(['successfully_updated_cron', '.']);
+		}
 	}
 
 	return 1;
+}
+
+#*****************************************************************************************************
+# Subroutine			: processManualUpdate
+# In Param				: UNDEF
+# Out Param				: UNDEF
+# Objective				: Checks and processes manual update
+# Added By				: Sabin Cheruvattil
+#*****************************************************************************************************
+sub processManualUpdate {
+	my $csrversion = Common::getCurrentConfScriptVersion();
+	if(($csrversion ne '0' and Common::versioncompare($csrversion, $AppConfig::version)) or ($_[0] and !-f Common::getVersionCachePath() and -f Common::getCrontabFile())) {
+		Common::display(["\n", 'updating_the_configuration_and_scripts']);
+		Common::deleteDeprecatedScripts();
+		Common::fixPathDeprecations();
+		Common::fixBackupsetDeprecations();
+		Common::addCDPWatcherToCRON(1);
+		Common::setCDPInotifySupport();
+		Common::startCDPWatcher();
+		# Deprecated path validation is present in fixDashbdDeprecPath. So dont worry about multiple path profile configuration
+		Common::fixDashbdDeprecPath();
+
+		Common::loadCrontab(1);
+		my $cdpcmd = Common::getCrontab($AppConfig::cdprescan, 'default_backupset', '{cmd}');
+		Common::setCDPRescanCRON($AppConfig::defrescanday, $AppConfig::defrescanhr, $AppConfig::defrescanmin, 1) unless($cdpcmd);
+
+		Common::createRescanRequest();
+
+		# Download latest binaries before restarting Cron/Dashboard services
+		if (Common::fetchInstalledEVSBinaryVersion()) {
+			if (-f Common::getCatfile(Common::getServicePath(), $AppConfig::evsBinaryName)) {
+				Common::removeItems(Common::getCatfile(Common::getServicePath(), $AppConfig::evsBinaryName));
+			}
+			if (-f Common::getCatfile(Common::getServicePath(), $AppConfig::evsDedupBinaryName)) {
+				Common::removeItems(Common::getCatfile(Common::getServicePath(), $AppConfig::evsDedupBinaryName));
+			}
+
+			Common::updateEVSBinary();
+		}
+
+        unless (Common::hasPythonBinary())
+		{
+            if (Common::updatePythonBinary()) {
+                Common::display('python_binary_downloaded_successfully');
+            }
+            else {
+                Common::retreat('unable_to_download_python_binary');
+            }
+        }
+
+		if ($AppConfig::appType eq 'IDrive') {
+			if (Common::fetchInstalledPerlBinaryVersion()) {
+				if (-f Common::getCatfile(Common::getServicePath(), $AppConfig::staticPerlBinaryName)) {
+					Common::removeItems(Common::getCatfile(Common::getServicePath(), $AppConfig::staticPerlBinaryName));
+				}
+
+				Common::updatePerlBinary() if(Common::hasStaticPerlSupport());
+			}
+		}
+
+		Common::createVersionCache($AppConfig::version);
+		Common::stopDashboardService($AppConfig::mcUser, Common::getAppPath()) if ($AppConfig::appType eq 'IDrive');
+		Common::processCronForManualInstall();
+
+		if (Common::checkCRONServiceStatus() == Common::CRON_RUNNING) {
+			my @lockinfo = Common::getCRONLockInfo();
+			if($lockinfo[2] and $lockinfo[2] ne $AppConfig::cronSetup) {
+				$lockinfo[2] = 'restart';
+				$lockinfo[3] = 'update';
+				Common::fileWrite($AppConfig::cronlockFile, join('--', @lockinfo));
+				Common::display(['updated_the_configuration_and_scripts', "\n"]);
+				return 1;
+			}
+		}
+
+		# if cron link is absent, reinstall the cron | this case can be caused by un-installation from other installation
+		my $sudoprompt = 'please_provide_' . ((Common::isUbuntu() || Common::isGentoo())? 'sudoers' : 'root') . '_pwd_for_cron_update';
+		my $sudosucmd = Common::getSudoSuCRONPerlCMD('restartidriveservices', $sudoprompt);
+
+		 Common::display(system($sudosucmd) == 0? 'cron_service_has_been_restarted' : 'failed_to_restart_idrive_services');
+
+		Common::display(["\n", 'updated_the_configuration_and_scripts']);
+		return 1;
+	}
 }
 
 #*****************************************************************************************************
@@ -706,7 +1134,7 @@ sub getDependentBinaries {
 	$downloadsPath =~ s/.zip//g;
 	$downloadsPath = $downloadsPath . "/";
 
-	my $ezf    = [@{$AppConfig::evsZipFiles{$AppConfig::appType}{$machineName}},@{$AppConfig::evsZipFiles{$AppConfig::appType}{'x'}}];
+	my $ezf    = $AppConfig::evsZipFiles{$AppConfig::appType}{$machineName};
 
 	for my $i (0 .. $#{$ezf}) {
 		$ezf->[$i] =~ s/__APPTYPE__/$AppConfig::appType/g;
@@ -719,10 +1147,26 @@ sub getDependentBinaries {
 		last if (Common::hasEVSBinary($binPath));
 	}
 
+	unless (Common::hasPythonBinary()) {
+		my $pyexe = ($AppConfig::machineOS =~ /freebsd/i) ?
+									$AppConfig::pythonZipFiles{"freebsd"} :
+									$AppConfig::pythonZipFiles{$machineName};
+		$pyexe =~ s/__KVER__/$AppConfig::kver/g;
+
+		my $pybin = Common::getCatfile($downloadsPath, $pyexe);
+		$pybin =~ s/\.zip//g;
+		$pybin = Common::getECatfile($pybin);
+		Common::rmtree(Common::getCatfile(Common::getAppPath(), $AppConfig::idrivePythonBinPath));
+		my $cppytbin = Common::updateLocaleCmd(("cp -rf $pybin " . Common::getECatfile(Common::getAppPath(), $AppConfig::idriveDepPath)));
+		`$cppytbin`;
+		my $privl = Common::updateLocaleCmd(("chmod -R 0755 " . Common::getECatfile(Common::getAppPath(), $AppConfig::idriveDepPath)));
+		`$privl`;
+	}
+
 	if ($AppConfig::appType eq 'IDrive') {
-		$ezf = [@{$AppConfig::staticperlZipFiles{$machineName}}];
+		$ezf = [$AppConfig::staticperlZipFiles{$machineName}];
 		if ($AppConfig::machineOS =~ /freebsd/i) {
-			$ezf = [@{$AppConfig::staticperlZipFiles{'freebsd'}}];
+			$ezf = [$AppConfig::staticperlZipFiles{'freebsd'}];
 		}
 
 		for my $i (0 .. $#{$ezf}) {
@@ -759,16 +1203,19 @@ sub getZipPath {
 }
 
 #*****************************************************************************************************
-# Subroutine			: setEmailIDs
-# Objective				: This subroutine is used to set email id's
-# Added By				: Anil Kumar
-#****************************************************************************************************/
+# Subroutine		: setEmailIDs
+# Objective			: This subroutine is used to set email id's
+# Added By			: Anil Kumar
+# Modified By		: Sabin Cheruvattil
+#*****************************************************************************************************
 sub setEmailIDs {
+	return 1 if($AppConfig::isautoinstall);
+
 	my $emailAddresses = Common::getAndValidate(["\n", 'enter_your_email_id', ': '], "single_email_address", 1, 0);
 
 	$emailAddresses =~ s/;/,/g;
 	if ($emailAddresses ne "") {
-		my $editFormatToDisplay = $emailAddresses;
+		my $editFormatToDisplay = '"'.$emailAddresses.'"';
 		Common::display(['configured_email_address_is', ' ', $editFormatToDisplay]);
 	}
 	else {
@@ -833,7 +1280,7 @@ sub setBandwidthThrottle {
 # Added By				: Anil Kumar
 #****************************************************************************************************/
 sub setBackupType {
-	if (Common::getUserConfiguration('DEDUP') eq 'on') {
+	if (Common::getUserConfiguration('DEDUP') eq 'on' or $AppConfig::isautoinstall) {
 		Common::setUserConfiguration('BACKUPTYPE', 'mirror');
 		return 1;
 	}
@@ -848,18 +1295,22 @@ sub setBackupType {
 # Subroutine			: getAndSetBackupType
 # Objective				: This subroutineis is used to get Backup type value from user and set it
 # Added By				: Anil Kumar
+# Modified By			: Sabin Cheruvattil
 #****************************************************************************************************/
 sub getAndSetBackupType {
 	if (Common::getUserConfiguration('DEDUP') eq 'on') {
 		Common::display(['your_backup_type_is_set_to', "\"", Common::getUserConfiguration('BACKUPTYPE'),"\". ", "\n"]);
 		return 1;
 	}
+
 	Common::display(['your_backup_type_is_set_to', "\"", Common::getUserConfiguration('BACKUPTYPE'),"\". ", 'do_u_really_want_to_edit' , "\n"]);
 	my $answer = Common::getAndValidate(['enter_your_choice'], "YN_choice", 1);
 	if ($answer eq "y" or $answer eq "Y") {
 		my $backuptype = displayBackupTypeOP();
 		Common::setUserConfiguration('BACKUPTYPE', ($backuptype == 1)?'mirror':'relative');
 		Common::display(["your_backup_type_is_changed_to", "\"", Common::getUserConfiguration('BACKUPTYPE'), "\".\n"]);
+
+		Common::createBackupStatRenewalByJob('backup');
 	}
 	return 1;
 }
@@ -912,13 +1363,12 @@ sub updateServiceDir {
 	Common::display(["\n","Your service directory is \"",$oldServicedir, "\". ", 'do_you_want_edit_this_y_or_n_?'], 1);
 	my $answer = Common::getAndValidate(['enter_your_choice'], "YN_choice", 1);
 	if (lc($answer) eq "y") {
-
 		# need to check any jobs are running here.
 		Common::display(["\n","changing_service_directory_will_terminate_all_the_running_jobs", 'do_you_want_edit_this_y_or_n_?'], 1);
 		$answer = Common::getAndValidate(['enter_your_choice'], "YN_choice", 1);
 		return 1 if (lc($answer) eq "n") ;
 
-		Common::checkForRunningJobsInOtherUsers() or Common::retreat("One or more backup/express backup/restore/archive cleanup jobs are in process with respect to others users. Please make sure those are completed and try again.");
+		Common::checkForRunningJobsInOtherUsers() or Common::retreat("One or more backup/local backup/restore/archive cleanup/continuous data protection jobs are in process with respect to others users. Please make sure those are completed and try again.");
 
 		my $servicePathSelection = Common::getAndValidate(["\n", 'enter_your_new_service_path'], "service_dir", 1);
 		if ($servicePathSelection eq '') {
@@ -934,19 +1384,22 @@ sub updateServiceDir {
 			return 1;
 		}
 
-		my $cmd = sprintf("%s %s allOp - 0 allType", $AppConfig::perlBin, Common::getScript('job_termination', 1));
+		my $cmd = sprintf("%s %s allOp - 0 allType %s %s", $AppConfig::perlBin, Common::getScript('job_termination', 1), $AppConfig::mcUser, 'operation_cancelled_due_to_service_dir_change');
 		$cmd = Common::updateLocaleCmd($cmd);
 		my $res = `$cmd 1>/dev/null 2>/dev/null`;
 
 		while (Common::getRunningJobs()) {
 			sleep(1);
 		}
+
 		if (Common::isDashboardRunning()) {
 			Common::stopDashboardService($AppConfig::mcUser, dirname(__FILE__));
 			while (Common::isDashboardRunning()) {
 				sleep(1);
 			}
 		}
+
+		Common::stopAllCDPServices() if(Common::isCDPWatcherRunning());
 
 		my $moveResult = moveServiceDirectory($oldSerDir, $newSerDir);
 		#my $moveResult = `mv '$oldSerDir' '$newSerDir' 2>/dev/null`;
@@ -971,6 +1424,8 @@ sub updateServiceDir {
 			Common::retreat('failed_to_save_user_configuration') unless(Common::saveUserConfiguration());
 			Common::display(['service_dir_updated_successfully', "\"", $servicePathSelection, "\"."]);
 
+			Common::createVersionCache($AppConfig::version);
+			Common::startCDPWatcher();
 			Common::checkAndStartDashboard(0, 1);
 
 			if (Common::checkCRONServiceStatus() == Common::CRON_RUNNING) {
@@ -981,8 +1436,10 @@ sub updateServiceDir {
 
 			return 1;
 		}
+
 		Common::retreat('please_try_again');
 	}
+
 	return 1;
 }
 
@@ -994,7 +1451,13 @@ sub updateServiceDir {
 #****************************************************************************************************/
 sub updateDefaultSettings {
 	if (-d $AppConfig::defaultMountPath) {
-		Common::display(["\n",'your_default_mount_point_for_local_backup_set_to', "\"$AppConfig::defaultMountPath\"", ".\n"], 0);
+		if($AppConfig::isautoinstall) {
+			my $msg	= Common::getStringConstant('auto_default_mount_point_local_backup');
+			Common::display([$msg, ' ' x ($AppConfig::autoconfspc - length($msg)), ': ', $AppConfig::defaultMountPath, '.']);
+		} else {
+			Common::display(["\n",'your_default_mount_point_for_local_backup_set_to', "\"$AppConfig::defaultMountPath\"", ".\n"], 0);
+		}
+
 		Common::setUserConfiguration('LOCALMOUNTPOINT', $AppConfig::defaultMountPath);
 	}
 
@@ -1003,27 +1466,74 @@ sub updateDefaultSettings {
 
 	my $failedPercent = $AppConfig::userConfigurationSchema{'NFB'}{'default'};
 	Common::setUserConfiguration('NFB', $failedPercent);
-	Common::display(["\n",'your_default_failed_files_per_set_to', $failedPercent, "%.\n", 'if_total_files_failed_for_backup', "\n"], 0, [$failedPercent]);
+	if($AppConfig::isautoinstall) {
+		my $msg	= Common::getStringConstant('auto_default_failed_files_per');
+		Common::display([$msg, ' ' x ($AppConfig::autoconfspc - length($msg)), ': ', $failedPercent . '%', '.']);
+	} else {
+		Common::display(["\n",'your_default_failed_files_per_set_to', $failedPercent, "%.\n", 'if_total_files_failed_for_backup', "\n"], 0, [$failedPercent]);
+	}
 
-	Common::display(["\n",'by_default_ignore_permission_is_disabled', "\n"],0);
 	Common::setUserConfiguration('IFPE', $AppConfig::userConfigurationSchema{'IFPE'}{'default'});
+	if($AppConfig::isautoinstall) {
+		my $msg	= Common::getStringConstant('auto_ignore_permission');
+		Common::display([$msg, ' ' x ($AppConfig::autoconfspc - length($msg)), ': ', 'cc_disabled']);
+	} else {
+		Common::display(["\n",'by_default_ignore_permission_is_disabled', "\n"],0);
+	}
 
-	#Common::display(["\n",'by_default_show_hidden_option_is_enabled', "\n"],0);
 	Common::setUserConfiguration('SHOWHIDDEN', $AppConfig::userConfigurationSchema{'SHOWHIDDEN'}{'default'});
 
 	if ($AppConfig::appType eq 'IDrive') {
-		Common::display(["\n",'your_desktop_access_is_enabled', "\n"],0);
 		Common::setUserConfiguration('DDA', $AppConfig::userConfigurationSchema{'DDA'}{'default'});
+
+		if($AppConfig::isautoinstall) {
+			my $msg	= Common::getStringConstant('auto_desktop_access');
+			Common::display([$msg, ' ' x ($AppConfig::autoconfspc - length($msg)), ': ', 'cc_enabled']);
+		} else {
+			Common::display(["\n", 'your_desktop_access_is_enabled', "\n"],0);
+		}
 	}
 
-	Common::display(["\n",'by_default_upload_multiple_file_chunks_option_is_enabled', "\n"],0);
 	Common::setUserConfiguration('ENGINECOUNT', $AppConfig::userConfigurationSchema{'ENGINECOUNT'}{'default'});
+	if($AppConfig::isautoinstall) {
+		my $msg	= Common::getStringConstant('auto_upload_multiple_file_chunks');
+		Common::display([$msg, ' ' x ($AppConfig::autoconfspc - length($msg)), ': ', 'cc_enabled']);
+	} else {
+		Common::display(["\n", 'by_default_upload_multiple_file_chunks_option_is_enabled', "\n"],0);
+	}
 
 	my $missingPercent = $AppConfig::userConfigurationSchema{'NMB'}{'default'};
 	Common::setUserConfiguration('NMB', $missingPercent);
-	Common::display(["\n",'your_default_missing_files_per_set_to', $missingPercent, "%.\n", 'if_total_files_missing_for_backup', "\n"], 0, [$missingPercent]);
+	if($AppConfig::isautoinstall) {
+		my $msg	= Common::getStringConstant('auto_default_missing_files_per');
+		Common::display([$msg, ' ' x ($AppConfig::autoconfspc - length($msg)), ': ', $missingPercent . '%.']);
+	} else {
+		Common::display(["\n",'your_default_missing_files_per_set_to', $missingPercent, "%.\n", 'if_total_files_missing_for_backup', "\n"], 0, [$missingPercent]);
+	}
 
-	Common::display(["\n",'your_default_bw_value_set_to', '100%.', "\n\n"], 0);
+	# CDP
+	Common::setUserConfiguration('CDP', $AppConfig::userConfigurationSchema{'CDP'}{'default'});
+	# Common::setDefaultCDPJob('01', 0, 1);
+
+	# Rescan
+	if(Common::canKernelSupportInotify()) {
+		Common::setCDPRescanCRON($AppConfig::defrescanday, $AppConfig::defrescanhr, $AppConfig::defrescanmin, 1);
+		if($AppConfig::isautoinstall) {
+			my $msg	= Common::getStringConstant('auto_default_backupset_scan_interval');
+			Common::display([$msg, ' ' x ($AppConfig::autoconfspc - length($msg)), ': ', "'" . Common::getLocaleString('daily_once') . "' at 12:00."]);
+		} else {
+			Common::display(["\n", 'your_default_cdp_scan_interval_is_set_to', "'" . Common::getLocaleString('daily_once') . "' at 12:00.", "\n"], 0);
+		}
+	}
+
+	Common::setUserConfiguration('CDPSUPPORT', Common::canKernelSupportInotify());
+
+	if($AppConfig::isautoinstall) {
+		my $msg	= Common::getStringConstant('auto_default_missing_files_per');
+		Common::display([$msg, ' ' x ($AppConfig::autoconfspc - length($msg)), ': ', '100%.']);
+	} else {
+		Common::display(["\n",'your_default_bw_value_set_to', '100%.', "\n\n"], 0);
+	}
 
 	Common::createUpdateBWFile($AppConfig::userConfigurationSchema{'BWTHROTTLE'}{'default'});
 	Common::setUserConfiguration('BWTHROTTLE', $AppConfig::userConfigurationSchema{'BWTHROTTLE'}{'default'});
@@ -1043,24 +1553,24 @@ sub installUserFiles {
 		%AppConfig::excludeFilesSchema
 	);
 
+	Common::fixPathDeprecations();
+
 	# set default dashboard path if it is edit account
-	#if ($AppConfig::appType eq 'IDrive') {
-		Common::createCrontab($AppConfig::dashbtask, $AppConfig::dashbtask);
-		Common::setCronCMD($AppConfig::dashbtask, $AppConfig::dashbtask);
-		Common::saveCrontab();
-	#}
+	Common::createCrontab($AppConfig::dashbtask, $AppConfig::dashbtask);
+	Common::setCronCMD($AppConfig::dashbtask, $AppConfig::dashbtask);
+	Common::saveCrontab();
 
 	my $file;
 	foreach (keys %filesToInstall) {
 		$file = $filesToInstall{$_}{'file'};
 		#Skipping for Archive as we not keeping any default backup set: Senthil
-		if ($file =~ m/archive/i){
-			next;
-		}
+
+		next if($file =~ m/archive/i || $_ =~ m/$AppConfig::cdp/gi);
+
 		$file =~ s/__SERVICEPATH__/Common::getServicePath()/eg;
 		$file =~ s/__USERNAME__/Common::getUsername()/eg;
 		if (open(my $fh, '>>', $file)) {
-			Common::display(["your_default_$_\_file_created"]);
+			Common::display(["your_default_$_\_file_created"]) unless($AppConfig::isautoinstall);
 			close($fh);
 			chmod 0777, $file;
 		}
@@ -1078,7 +1588,7 @@ sub installUserFiles {
 # Objective				: This subroutineis is used to edit logged in user account
 # Added By				: Yogesh Kumar
 # Modified By			: Anil Kumar, Sabin Cheruvattil
-#****************************************************************************************************/
+#*****************************************************************************************************
 sub editAccount {
 	Common::display(["\n",'select_the_item_you_want_to_edit', ":\n"]);
 	my $loggedInUser = $_[0];
@@ -1090,28 +1600,31 @@ sub editAccount {
 	tie(my %optionsInfo, 'Tie::IxHash',
 		'__title_backup__backup_location_lc'                => \&editBackupToLocation,
 		'__title_backup__backup_type'                       => \&getAndSetBackupType,
+		'__title_backup__backupset_rescan_interval'			=> \&verifyBackupset,
 		'__title_backup__bandwidth_throttle'                => \&setBandwidthThrottle,
 		'__title_backup__edit_failed_backup_per'            => \&editFailedFilePercentage,
+		'__title_backup__ignore_permission_denied'			=> \&editIgnorePermissionDeniedError,
 		'__title_backup__edit_missing_backup_per'           => \&editMissingFilePercentage,
+		'__title_backup__show_hidden_files'					=> \&editShowHiddenFiles,
+		'__title_backup__upload_multiple_chunks'  			=> sub { Common::setUploadMultipleChunks(); },
 		'__title_general_settings__desktop_access'          => \&editDesktopAccess,
-		'__title_general_settings__title_email_address'     => sub { updateEmailIDs(); },
-		'__title_general_settings__ignore_permission_denied'=> \&editIgnorePermissionDeniedError,
+		'__title_general_settings__title_email_address'  	=> sub { updateEmailIDs(); },
 		'__title_general_settings__edit_proxy'              => \&updateProxyOP,
 		#'__title_general_settings__retain_logs'             => \&setRetainLogs,
 		'__title_general_settings__edit_service_path'       => \&updateServiceDir,
-		'__title_general_settings__show_hidden_files'       => \&editShowHiddenFiles,
 		'__title_general_settings__notify_software_update'  => sub { Common::setNotifySoftwareUpdate(); },
-		'__title_general_settings__upload_multiple_chunks'  => sub { Common::setUploadMultipleChunks(); },
 		'__title_restore_settings__restore_from_location'   => sub { Common::editRestoreFromLocation(); },
 		'__title_restore_settings__restore_location'        => sub { Common::editRestoreLocation();	},
 		'__title_restore_settings__restore_loc_prompt'      => sub { Common::setRestoreFromLocPrompt(); },
+		'__title_services__start_restart_cdp_service'		=> \&restartCDPService,
 		'__title_services__start_restart_dashboard_service' => sub { checkDashboardStart($loggedInUser); },
 		'__title_services__restart_cron_service'            => sub { Common::confirmRestartIDriveCRON(); },
 		'__title_empty__exit'                               => \&updateAndExitFromEditMode,
 	);
-	if (Common::getUserConfiguration('DEDUP') eq 'on') {
-		delete $optionsInfo{'__title_backup__backup_type'};
-	}
+	
+	delete($optionsInfo{'__title_backup__backup_type'}) if (Common::getUserConfiguration('DEDUP') eq 'on');
+	delete($optionsInfo{'__title_backup__backupset_rescan_interval'}) if (!Common::canKernelSupportInotify());
+
 	if($AppConfig::appType eq 'IBackup') {
 		delete $optionsInfo{'__title_general_settings__desktop_access'};
 		delete $optionsInfo{'__title_services__start_restart_dashboard_service'};
@@ -1139,13 +1652,38 @@ sub editAccount {
 }
 
 #*****************************************************************************************************
+# Subroutine			: restartCDPService
+# Objective				: Check | show status | start cdp service
+# Added By				: Sabin Cheruvattil
+#*****************************************************************************************************
+sub restartCDPService {
+	my $startcdp = 'y';
+
+	Common::display(['failed_to_start_cdp_service', '. ', 'your_machine_not_have_min_req_cdp', '.']) unless(Common::canKernelSupportInotify());
+
+	unless(Common::hasFileNotifyPreReq()) {
+		unlink(Common::getCDPHaltFile()) if(-f Common::getCDPHaltFile());
+		Common::checkInstallDBCDPPreRequisites();
+		return 1;
+	}
+
+	if (Common::isCDPServicesRunning()) {
+		Common::display(["\n", 'cdp_service_running', '. ', 'do_you_want_to_restart_cdp_yn']);
+		$startcdp = Common::getAndValidate(['enter_your_choice'], "YN_choice", 1);
+	}
+
+	Common::restartAllCDPServices(1) if($startcdp eq 'y');
+	return 1;
+}
+
+#*****************************************************************************************************
 # Subroutine			: checkDashboardStart
 # Objective				: Check | show status | start dashboard
 # Added By				: Sabin Cheruvattil
 # Modified By			: Yogesh Kumar, Senthil Pandian
 #****************************************************************************************************/
 sub checkDashboardStart {
-	unless (Common::hasStaticPerlSupport()) {
+	unless (Common::hasDashboardSupport()) {
 		Common::display('dashboard_is_not_supported_for_this_arc_yet');
 		return 1;
 	}
@@ -1170,6 +1708,11 @@ sub checkDashboardStart {
 				Common::saveUserConfiguration(0);
 			}
 
+			if ((Common::getUserConfiguration('DELCOMPUTER') eq 'D_1') or (Common::getUserConfiguration('DELCOMPUTER') eq '')) {
+					Common::setUserConfiguration('DELCOMPUTER', 'S_1');
+					Common::saveUserConfiguration(0);
+			}
+
 			Common::confirmStartDashboard(1, 1);
 			Common::checkAndStartDashboard(0, 1);
 		}
@@ -1184,7 +1727,78 @@ sub checkDashboardStart {
 		Common::saveUserConfiguration(0);
 	}
 
+	if ((Common::getUserConfiguration('DELCOMPUTER') eq 'D_1') or (Common::getUserConfiguration('DELCOMPUTER') eq '')) {
+			Common::setUserConfiguration('DELCOMPUTER', 'S_1');
+			Common::saveUserConfiguration(0);
+	}
+
 	Common::confirmStartDashboard(1);
+	return 1;
+}
+
+#*****************************************************************************************************
+# Subroutine			: verifyBackupset
+# Objective				: Helps to place rescan request/schedule the time
+# Added By				: Sabin Cheruvattil
+#*****************************************************************************************************
+sub verifyBackupset {
+	Common::display(["\n", 'enter_sno_press_p_or_e_to_exit']);
+
+	tie(my %optionsInfo, 'Tie::IxHash',
+		'rescan_now'			=> \&rescanNow,
+		'schedule_for_later'	=> \&editCDPRescanFrequency
+	);
+
+	my @options = keys(%optionsInfo);
+	Common::displayMenu('', @options);
+	my $choice = Common::getAndValidate(['enter_your_choice'], "PEMenu_choice", 1, 1, scalar(@options));
+
+	return 1 if($choice eq 'p');
+	exit(0) if($choice eq 'e');
+
+	$optionsInfo{$options[$choice - 1]}->();
+	return 1;
+}
+
+#*****************************************************************************************************
+# Subroutine			: editCDPRescanFrequency
+# Objective				: Helps to update CDP rescan interval
+# Added By				: Sabin Cheruvattil
+#*****************************************************************************************************
+sub editCDPRescanFrequency {
+	Common::loadCrontab(1);
+
+	Common::display(["\n", 'your_cdp_rescan_interval_is_set_to', ': [', getCDPRescanInterval(), ']. ', 'do_u_really_want_to_edit', "\n"], 0);
+	my $choice = Common::getAndValidate(['enter_your_choice'], "YN_choice", 1);
+	if(lc($choice) eq "y") {
+		my $dom = Common::getAndValidate(['enter_backupset_rescan_interval_in_days'], "cdp_rescan_interval", 1);
+		my $h = Common::getAndValidate(['enter_hour_0_-_23', ': '], '24hours_validator', 1);
+		my $m = Common::getAndValidate(['enter_minute_0_-_59', ': '], 'minutes_validator', 1);
+
+		Common::setCDPRescanCRON($dom, $h, $m, 1);
+	}
+	
+	Common::display(["\n", 'your_cdp_rescan_interval_is_set_to', ': [', getCDPRescanInterval(), '].'], 1);
+}
+
+#*****************************************************************************************************
+# Subroutine			: rescanNow
+# Objective				: This helps to show rescan message and places rescan request
+# Added By				: Sabin Cheruvattil
+#*****************************************************************************************************
+sub rescanNow {
+	my ($dirswatch, $jsjobselems, $jsitems) = Common::getCDPWatchEntities();
+	if(!@{$dirswatch}) {
+		Common::display(["\n", 'unable_to_place_rescan_request', '. ', 'backupset_is_empty', '.'], 1);
+		return 1;
+	}
+
+	if(Common::createRescanRequest()) {
+		Common::display(["\n", 'rescan_request_placed_success', '.'], 1);
+	} else {
+		Common::display(["\n", 'unable_to_place_rescan_request', '.'], 1);
+	}
+
 	return 1;
 }
 
@@ -1196,6 +1810,7 @@ sub checkDashboardStart {
 #****************************************************************************************************/
 sub confirmDuplicateDashboardInstance {
 	return 0 if ($AppConfig::appType ne 'IDrive');
+
 	Common::loadCrontab(1);
 	my $curdashscript = Common::getCrontab($AppConfig::dashbtask, $AppConfig::dashbtask, '{cmd}');
 	my $curdashscriptdir = (($curdashscript && $curdashscript ne '')? dirname($curdashscript) . '/' : '');
@@ -1210,7 +1825,7 @@ sub confirmDuplicateDashboardInstance {
 		return 0;
 	}
 
-	my $newdashscript = Common::getScript($AppConfig::dashbtask);
+	my $newdashscript = Common::getDashboardScript();
 	# check same path or not
 	if ($curdashscript ne $newdashscript) {
 		Common::display(["\n", 'user', ' "', $_[0], '" ', 'is_already_having_active_setup_path', ' ', '"' . dirname($curdashscript) . '"', '. ']);
@@ -1406,16 +2021,7 @@ sub editShowHiddenFiles {
 
 	Common::removeBKPSetSizeCache('backup');
 	Common::removeBKPSetSizeCache('localbackup');
-	system(
-		Common::updateLocaleCmd(
-			$AppConfig::perlBin . " " . Common::getScript('utility', 1) ." CALCULATEBACKUPSETSIZE backup 2>/dev/null &"
-		)
-	);
-	system(
-		Common::updateLocaleCmd(
-			$AppConfig::perlBin . " " . Common::getScript('utility', 1) ." CALCULATEBACKUPSETSIZE localbackup 2>/dev/null &"
-		)
-	);
+	Common::createJobSetExclDBRevRequest('hidden');
 
 	return 1;
 }
@@ -1445,7 +2051,7 @@ sub editDesktopAccess {
 	Common::setUserConfiguration('DDA', ($prevStatus eq 'disabled')? 0 : 1);
 	Common::display(['your_desktop_access_is_' . (($prevStatus eq 'disabled')? 'enabled' : 'disabled')]);
 	Common::saveUserConfiguration(1);
-	Common::checkAndStartDashboard() unless(Common::getUserConfiguration('DDA'));
+	Common::checkAndStartDashboard(1) unless(Common::getUserConfiguration('DDA'));
 	return 1;
 }
 
