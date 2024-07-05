@@ -61,8 +61,8 @@ use constant CONST => {
 			AskMirrorType	=> '1) Mirror',
 			AskRelativeType	=> '2) Relative',
 			Product => 'ForLinux',
-			ScriptBuildVersion => '2.31',
-			ScriptReleaseDate => '10-18-2021',
+			ScriptBuildVersion => '2.34',
+			ScriptReleaseDate => '12-26-2022',
 		#------------------EVS Operations ---------------------#
 			LinkBucketOp => 'LinkBucket',
 			NickUpdateOp => 'NickUpdate',
@@ -363,7 +363,7 @@ use constant CONST => {
 			operationFailCutoff => "Operation could not be completed. Reason : Operation Cancelled due to Cut off.",
 			logOpeningMessage => 'Opening Log file...',
 			FileopeningMess => 'Opening file to edit...',
-			OneJobsRunning => 'One or more jobs (backup,local backup,restore,local restore,archive cleanup,continuous data protection) and dashboard service are in progress. Do you want to cancel the jobs and continue with the uninstall operation(y/n)?',
+			OneJobsRunning => 'One or more jobs (backup,local backup,restore,local restore,archive cleanup,continuous data protection) and dashboard service are in progress. Do you want to cancel the jobs and continue with the uninstall operation (y/n)?',
 		#------------------- P ----------------------------#
 			providePermission => 'Please provide proper permission and try again.',
 			ctrlc2Exit => 'Note: Please press CTRL+C to exit.',

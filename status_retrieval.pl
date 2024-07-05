@@ -162,10 +162,12 @@ sub backupProgress {
 	my $pidFile = Common::getCatfile($AppConfig::jobRunningDir, $AppConfig::pidFile);
 	my $playPause   = $AppConfig::running;
 	$playPause = undef if($jobType =~ /$AppConfig::cdp/i);
-	my $moreOrLess  = $AppConfig::less;
+
 	my ($redrawForLess, $drawForPlayPause) = (0) x 2;
 	my $temp   = $AppConfig::totalEngineBackup;
 	my $bwPath = Common::getCatfile($AppConfig::jobRunningDir, $AppConfig::bwFile);
+	my $moreOrLess = $AppConfig::less;
+    $moreOrLess    = $AppConfig::more if(Common::checkScreeSize());
 
 	if($scanfor) {
 		scanProgress($scanfor, lc($jobType));
@@ -235,9 +237,10 @@ sub backupProgress {
 sub restoreProgress {
     my $pidFile = Common::getCatfile($AppConfig::jobRunningDir, $AppConfig::pidFile);
 	my $progressDetailsFilePath = Common::getCatfile($AppConfig::jobRunningDir, $AppConfig::progressDetailsFilePath);
-	my $moreOrLess    = $AppConfig::less;
 	my $redrawForLess = 0;
-	
+	my $moreOrLess = $AppConfig::less;
+    $moreOrLess    = $AppConfig::more if(Common::checkScreeSize());
+
     Common::getCursorPos(15,Common::getStringConstant('preparing_file_list').$lineFeed) if(-e $pidFile);
 	$keyPressEvent = Common::catchPressedKey();
     while(-f $pidFile) {

@@ -81,9 +81,14 @@ sub init {
 #****************************************************************************************************/
 sub performOperation {
 	my $operation = '';
-	$operation = $_[0] if ($_[0]);
+	if ($_[0]) {
+		$operation = $_[0];
+		chomp($operation);
+	}
+
 	if ($operation eq "GETQUOTA") {
-		getAndUpdateQuota();
+		$AppConfig::callerEnv = 'BACKGROUND'; #Added to avoid unwanted error message display 
+		getAndUpdateQuota($ARGV[1]);
 	}
 	elsif ($operation eq 'UPLOADMIGRATEDLOG') {
 		Common::uploadMigratedLog();
@@ -174,6 +179,9 @@ sub performOperation {
 	elsif ($operation eq 'DASHBOARD10') {
 		getLogDetails($ARGV[$param], $ARGV[$param + 1]);
 	}
+	elsif ($operation eq 'UPDATEJOBSTATUS') {
+		updateJobStatus($ARGV[$param]);
+	}
 	elsif ($operation eq 'SAVECDPSETTINGS') {
 		saveCDPSettings($ARGV[$param]);
 	}
@@ -183,6 +191,12 @@ sub performOperation {
 	elsif ($operation eq 'RECALCULATEBACKUPSETSIZE') {
 		recalculateBackupsetSize();
 	}
+	elsif($operation eq 'GETLOCALBACKUPSIZE') {
+		getLocalBackupSize();
+	}
+	elsif($operation eq 'GETLOCALRESTOREFILES') {
+		getLocalRestoreFiles($ARGV[$param], $ARGV[$param + 1]);
+	}
 	elsif($operation eq "REINDEX") {
 		#my $errorKey = Helpers::loadUserConfiguration();
 		#Helpers::retreat($Configuration::errorDetails{$errorKey}) if($errorKey != 1);
@@ -191,9 +205,45 @@ sub performOperation {
 	elsif($operation eq "DISPCRONREBOOTCMD") {
 		displayCRONRebootCMD();
 	}
+	elsif($operation eq "PRINTVERSIONDATEFORDASHBOARD") {
+		printVersionDateForDashboard();
+	}
+	elsif($operation eq "PRINTVERSIONFORDASHBOARD") {
+		printVersionForDashboard();
+	}
 	else {
 		Common::traceLog("Unknown operation: $operation");
 	}
+}
+
+#*****************************************************************************************************
+# Subroutine	: printVersionForDashboard
+# In Param		: UNDEF
+# Out Param		: UNDEF
+# Objective		: Prints the scripts version for dashboard display
+# Added By		: Sabin Cheruvattil
+# Modified By	: 
+#*****************************************************************************************************
+sub printVersionForDashboard {
+	print($AppConfig::version);
+	exit(0);
+}
+
+#*****************************************************************************************************
+# Subroutine	: printVersionDateForDashboard
+# In Param		: UNDEF
+# Out Param		: UNDEF
+# Objective		: Prints the scripts version and release date for dashboard display
+# Added By		: Sabin Cheruvattil
+# Modified By	: 
+#*****************************************************************************************************
+sub printVersionDateForDashboard {
+	my $ptver	= $AppConfig::version;
+	my $ptdate	= $AppConfig::releasedate;
+	$ptdate		=~ s/-/\//g;
+
+	print($ptver . '_' . $ptdate);
+	exit(0);
 }
 
 #*****************************************************************************************************
@@ -246,6 +296,7 @@ sub silentDependencyInstall {
 # Modified By	: 
 #*****************************************************************************************************
 sub disableAutoInstallCRON {
+	Common::lockCriticalUpdate("cron");
 	# Disable the installation task so that cron wont launch this job again
 	Common::loadCrontab(1);
 	
@@ -256,6 +307,8 @@ sub disableAutoInstallCRON {
 		Common::setCrontab($AppConfig::misctask, $AppConfig::miscjob, {'settings' => {'status' => 'disabled'}});
 		Common::saveCrontab();
 	}
+
+	Common::unlockCriticalUpdate("cron");
 }
 
 #*****************************************************************************************************
@@ -447,12 +500,11 @@ sub uninstallCRON {
 #****************************************************************************************************/
 sub getAndUpdateQuota {
 	my $csf = Common::getCachedStorageFile();
-	unlink($csf);
-
+	unlink($csf) unless(defined($_[0])); # Modified by Senthil to avoid quota display issue when EVS called to getQuota very frequently & failed to update file.
 	my @result;
  
     my $planSpecial = Common::getUserConfiguration('PLANSPECIAL');
-    if($planSpecial ne '' and $planSpecial =~ /business/i) {    
+    if($planSpecial ne '' and $planSpecial =~ /business/i) {
         my $uname = Common::getUsername();
         my $upswd = &Common::getPdata($uname);
         my $encType = Common::getUserConfiguration('ENCRYPTIONTYPE');
@@ -462,23 +514,18 @@ sub getAndUpdateQuota {
         my $res = Common::makeRequest(12);
         if ($res) {
             @result = Common::parseEVSCmdOutput($res->{DATA}, 'login', 1);
-        }       
+        }
     } else {
-        my $webAPI = Common::getUserConfiguration('WEBAPI');
-        unless($webAPI){
-            Common::traceLog('your_account_not_configured_properly');
-            Common::display('your_account_not_configured_properly');
-            return 0;
-        }
-
-        my $res = Common::makeRequest(9, [
-            $webAPI,
-        ]);
-        if(defined($res->{DATA})) {
-            my %evsQuotaHashOutput = Common::parseXMLOutput(\$res->{DATA});
-            @result = \%evsQuotaHashOutput;
-        }
+		Common::createUTF8File('GETQUOTA') or Common::retreat('failed_to_create_utf8_file');
+		@result = Common::runEVS('tree');
+		if (exists $result[0]->{'message'}) {
+			if ($result[0]->{'message'} eq 'ERROR') {
+				Common::display('unable_to_retrieve_the_quota');
+				return 0;
+			}
+		}
     }
+
 	unless (@result) {
 		Common::traceLog('unable_to_cache_the_quota',".");
 		Common::display('unable_to_retrieve_the_quota');
@@ -622,6 +669,7 @@ sub preUpdateOperation {
 			my $stm		= $now[1] + 1;
 			$stm		= 0 if($stm > 59);
 
+			Common::lockCriticalUpdate("cron");
 			Common::loadCrontab(1);
 			Common::createCrontab($AppConfig::misctask, $AppConfig::miscjob);
 			Common::setCrontab($AppConfig::misctask, $AppConfig::miscjob, 'cmd', $execmd);
@@ -630,6 +678,7 @@ sub preUpdateOperation {
 			Common::setCrontab($AppConfig::misctask, $AppConfig::miscjob, 'm', $stm);
 			Common::setCrontab($AppConfig::misctask, $AppConfig::miscjob, 'h', '*');
 			Common::saveCrontab();
+			Common::unlockCriticalUpdate("cron");
 
 			Common::fileWrite($AppConfig::silinstlock, 1);
 			sleep(2) while(-f $AppConfig::silinstlock);
@@ -681,15 +730,18 @@ sub postUpdateOperation {
 	# Express backup path under online backup is deprecated
 	Common::fixPathDeprecations();
 	Common::fixBackupsetDeprecations();
+	Common::removeDeprecatedDB();
     Common::migrateLocalBackupCronEntry();
 	# Create version file post update
 	Common::createVersionCache($AppConfig::version);
 
 	Common::addCDPWatcherToCRON(1);
 	Common::setCDPInotifySupport();
+	Common::stopAuxCDPServices() and Common::startAuxCDPServices();
 	Common::startCDPWatcher() unless(Common::isCDPServicesRunning());
 
 	Common::fixDashbdDeprecPath();
+	Common::createExcludeInfoFiles();
 
 	Common::loadCrontab(1);
 	my $cdpcmd = Common::getCrontab($AppConfig::cdprescan, 'default_backupset', '{cmd}');
@@ -739,7 +791,7 @@ sub postUpdateOperation {
 	$cmd = Common::updateLocaleCmd($cmd);
 	my $res = `$cmd`;
 	print $res;
-
+	Common::traceLog('logout');
 	Common::initiateMigrate();
 }
 
@@ -789,7 +841,7 @@ sub checkAndStartCRON {
 
 	# if cron link is absent, reinstall the cron | this case can be caused by un-installation from other installation
 	Common::display(['cron_service_must_be_restarted_for_this_update']) if ($AppConfig::mcUser ne 'root');
-	my $sudoprompt = 'please_provide_' . ((Common::isUbuntu() || Common::isGentoo())? 'sudoers' : 'root') . '_pwd_for_cron';
+	my $sudoprompt = 'please_provide_' . (Common::hasSudo()? 'sudoers' : 'root') . '_pwd_for_cron';
 	my $sudosucmd = Common::getSudoSuCRONPerlCMD('restartidriveservices', $sudoprompt);
 
 	unless (system($sudosucmd) == 0) {
@@ -841,8 +893,8 @@ sub cdpWatch {
 
 	do {
 		unless(-f $cdpwatcherlock) {
-			`kill $clientpid 2>/dev/null` if($clientpid);
-			`kill $serverpid 2>/dev/null` if($serverpid);
+			`kill -9 $clientpid 2>/dev/null` if($clientpid);
+			`kill -9 $serverpid 2>/dev/null` if($serverpid);
 
 			Common::stopAllCDPServices();
 			exit(0);
@@ -881,8 +933,8 @@ sub cdpWatch {
 
 			# Check service path, watcher lock and scripts path.
 			if(!-d Common::getServicePath() or !-d Common::getAppPath() or !-f $cdpwatcherlock) {
-				`kill $clientpid 2>/dev/null` if($clientpid);
-				`kill $serverpid 2>/dev/null` if($serverpid);
+				`kill -9 $clientpid 2>/dev/null` if($clientpid);
+				`kill -9 $serverpid 2>/dev/null` if($serverpid);
 
 				Common::stopAllCDPServices();
 				exit(0);
@@ -1023,7 +1075,11 @@ sub launchDBWriter {
 					next;
 				}
 
-				if($opx eq 'backup' || $opx eq 'cdp' || $opx eq 'localbackup') {
+				if($opx eq 'cdp' and ($fidx and (($fidx % $AppConfig::cdploadchkct) == 0)) and (Common::getRecentLoadAverage() > 80)) {
+					sleep(2);
+				}
+
+				if($opx eq 'backup' or $opx eq 'cdp' or $opx eq 'localbackup') {
 					# check CDP timeout
 					if($opx eq 'cdp') {
 						my $psf = stat($procfile);
@@ -1081,7 +1137,7 @@ sub launchDBWriter {
                                 # utf8::decode($procdata->{$procidx}{'ITEM'}); # accented files fails to commit
 								my $commstat;
 								if($opx eq 'backup') {
-									$commstat	= Sqlite::updateBackUpSuccess($procdata->{$procidx}{'ITEM'});
+									$commstat	= Sqlite::updateBackUpSuccess($procdata->{$procidx}{'ITEM'}, $procdata->{$procidx}{'CMP_MTIME'});
 								} elsif($opx eq 'localbackup') {
 									$commstat = Sqlite::updateExpressBackUpSuccess($procdata->{$procidx}{'ITEM'}, $procdata->{$procidx}{'FOLDER_ID'}, $procdata->{$procidx}{'ENC_NAME'});
                                     my $commstat1 = Sqlite::updateExpressDB($procdata->{$procidx}{'ITEM'}, $procdata->{$procidx}{'FOLDER_ID'}, $procdata->{$procidx}{'ENC_NAME'}, $procdata->{$procidx}{'MPC'}, $procdata->{$procidx}{'SIZE'}, $procdata->{$procidx}{'MOD_TIME'});
@@ -1218,7 +1274,7 @@ sub launchDBWriter {
 							} elsif($procdata->{$procidx}{'OPERATION'} eq 'DIR_ADD') {
 								my @jbt	= split(/\|/, $procdata->{$procidx}{'JOBNAME'});
 								my $iscdp = $jbt[0] eq 'backup'? 1 : 0;
-								Common::createScanRequest($procdata->{$procidx}{'DBPATH'}, $jbt[1], 0, $jbt[0], $iscdp, 0);
+								Common::createScanRequest($procdata->{$procidx}{'DBPATH'}, $jbt[1], 0, $jbt[0], $iscdp, 0, 1);
 
 								my $cpdircache = Common::getCatfile(Common::getJobsPath($AppConfig::cdp), $AppConfig::cdpcpdircache);
 								my $fbct = 0;
@@ -1246,10 +1302,6 @@ sub launchDBWriter {
 						}
 
 						undef $bsdbstats;
-
-						# Have to process all the available data as rescan will not take care of express backup set | but will get handled by next express backup scan.
-						# This is to handle huge sdelete & add cases
-						# Common::createRescanRequest() if($#procids > $AppConfig::cdpscandet);
 
 						Sqlite::closeDB();
 					}
@@ -1300,7 +1352,8 @@ sub launchDBWriter {
 								}
 							} elsif(!$ongbackup) {
 								Common::traceLog("Starting rescan");
-								$opstat = Common::doBackupSetReScanAndUpdateDB($procdata->{'rsdata'});
+								my $custom = (exists $procdata->{'custom'} and $procdata->{'custom'})? 1 : 0;
+								$opstat = Common::doBackupSetReScanAndUpdateDB($procdata->{'rsdata'}, $custom);
 								Common::traceLog("Ending rescan");
 							}
 
@@ -1329,7 +1382,7 @@ sub launchDBWriter {
 						handleCommitFailure($opstat, $iscmtretry, $procfile, $failcmtdir, $cmtvaultdir) unless($ongbackup);
 						exit(0);
 					}
-					
+
 					local $SIG{INT}		= sub {`kill $scpid`; exit(0);};
 					local $SIG{TERM}	= sub {`kill $scpid`; exit(0);};
 					local $SIG{KILL}	= sub {`kill $scpid`; exit(0);};
@@ -1378,7 +1431,10 @@ sub launchDBWriter {
 					
 					Common::fileWrite($updjson, JSON::to_json(\%jsinfo));
 					Sqlite::closeDB();
-					Common::loadNotifications() and Common::setNotification(sprintf("get_%sset_content", $procdata->{'jobname'})) and Common::saveNotifications();
+					if(Common::loadNotifications() and Common::lockCriticalUpdate("notification")) {
+						Common::setNotification(sprintf("get_%sset_content", $procdata->{'jobname'})) and Common::saveNotifications();
+						Common::unlockCriticalUpdate("notification");
+					}
 
 					unlink($procfile);
 				}
@@ -1428,10 +1484,13 @@ sub launchDBWriter {
 						foreach my $procidx (keys(%{$procdata})) {
 							next if($procdata->{$procidx}{'JOBNAME'} ne $jbname || $jbdata[0] ne $procdata->{$procidx}{'JOBTYPE'});
 
+							my $tempName = $procdata->{$procidx}{'ITEM'};
+							utf8::decode($tempName);
+
 							if($procdata->{$procidx}{'ITEMTYPE'} eq 'F') {
-								$commstat = Sqlite::updateCloudFileDelete($procdata->{$procidx}{'ITEM'}) if(-f $procdata->{$procidx}{'ITEM'});
+								$commstat = Sqlite::updateCloudFileDelete($procdata->{$procidx}{'ITEM'}) if(-f $procdata->{$procidx}{'ITEM'} or -f $tempName);
 							} elsif($procdata->{$procidx}{'ITEMTYPE'} eq 'D') {
-								$commstat = Sqlite::updateCloudDirDelete($procdata->{$procidx}{'ITEM'}) if(-d $procdata->{$procidx}{'ITEM'});
+								$commstat = Sqlite::updateCloudDirDelete($procdata->{$procidx}{'ITEM'}) if(-d $procdata->{$procidx}{'ITEM'} or -d $tempName);
 							}
 						}
 
@@ -1777,6 +1836,17 @@ sub getprogressdetails {
 	my $progressDetailsFile = Common::getCatfile(Common::getJobsPath($_[0]), $AppConfig::progressDetailsFilePath);
 	my @progressData = Common::getProgressDetails($progressDetailsFile);
 	print(JSON::to_json(\@progressData));
+}
+
+#*****************************************************************************************************
+# Subroutine : updateJobStatus
+# In Param   : Job-Type
+# Out Param  : None
+# Objective  : Update job operation status if failed to exit
+# Added By   : Yogesh Kumar
+#*****************************************************************************************************
+sub updateJobStatus {
+	Common::checkAndRenameFileWithStatus(Common::getJobsPath($_[0]), $_[0]);
 }
 
 #*****************************************************************************************************
@@ -2141,9 +2211,10 @@ sub reIndexDBOperation {
 				#print "itemName:$backupLocation$itemName#\n";				
 				#$fieldMPC = $backupLocation.$fieldMPC;
 				$fieldMPC = $backupLocation;
+				$modtime = Common::convert_to_unixtimestamp($modtime);
 				my $dirID = Sqlite::checkFolderExistenceInExpressDB($itemName, $fieldMPC);
 				if(!$dirID){
-					$dirID = Sqlite::insertExpressFolders($fieldMPC.$itemName);
+					$dirID = Sqlite::insertExpressFolders($fieldMPC.$itemName, $modtime);
 				}
 				my $fileName = (Common::fileparse($itemName))[0];
 				$fileName = "'$fileName'";
@@ -2194,4 +2265,32 @@ sub backupExistingDBAndCreateNew {
 	# print "\n\n databaseLB:$databaseLB \n\n";
 	# Sqlite::createLBDB();
 	Sqlite::initiateExpressDBoperation($databaseLB);
+}
+
+#*****************************************************************************************************
+# Subroutine : getLocalBackupSize
+# In Param   : None
+# Out Param  : Bytes (INT)
+# Objective  : Get local backup size
+# Added By   : Yogesh Kumar
+#****************************************************************************************************/
+sub getLocalBackupSize {
+	print(Common::getLocalStorageUsed());
+}
+
+#*****************************************************************************************************
+# Subroutine : getLocalRestoreFiles
+# In Param   : None
+# Out Param  : files | jsonstring
+# Objective  : Get local restore file list
+# Added By   : Yogesh Kumar
+#****************************************************************************************************/
+sub getLocalRestoreFiles {
+	my @fileList = Common::getLocalRestoreItems($_[0], $_[1], ["SIZE", "LMD"], 1);
+	if ($fileList[0]) {
+		print(JSON::to_json($fileList[1]));
+	}
+	else {
+		print(JSON::to_json([]));
+	}
 }

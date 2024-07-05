@@ -90,7 +90,7 @@ $SIG{USR1}	= \&process_term;
 $SIG{WINCH} = \&Common::changeSizeVal;
 
 #Assigning Perl path
-my $perlPathCmd = Common::updateLocaleCmd('which perl');
+my $perlPathCmd = 'which perl';
 my $perlPath = `$perlPathCmd`;
 chomp($perlPath);
 $perlPath = '/usr/local/bin/perl' if($perlPath eq '');
@@ -119,7 +119,7 @@ my $curFile = basename(__FILE__);
 
 #Flag to silently do backup operation.
 my $silentBackupFlag = 0;
-if (${ARGV[0]} eq '--silent' or ${ARGV[0]} eq 'dashboard' or ${ARGV[0]} eq 'immediate') {
+if (${ARGV[0]} eq '--silent' or ${ARGV[0]} eq 'dashboard' or ${ARGV[0]} eq 'immediate' or ${ARGV[0]} eq 'SCHEDULED') {
 	$AppConfig::callerEnv = 'BACKGROUND';
 	$silentBackupFlag = 1;
 }
@@ -225,6 +225,16 @@ my $minimalErrorRetry	= $jobRunningDir.'/errorretry.min';
 my $progexitfile		= Common::getCatfile($jobRunningDir, 'progress.exit');
 my $schcancelfile		= Common::getCatfile($jobRunningDir, $AppConfig::schtermf);
 
+#Added for IDrive360 to handle when backup started from Dashboard UI
+#Delaying current job when previous job's cleanup process not completed. 
+my $lockRetry = 0;
+while(-f $engineLockFile) {
+Common::traceLog("engineLockFile lockRetry:$lockRetry");
+	sleep(1);
+	last if($lockRetry == 60);
+	$lockRetry++
+}
+
 #Renaming the log file if backup process terminated improperly
 Common::checkAndRenameFileWithStatus($jobRunningDir, lc($jobType));
 
@@ -254,13 +264,19 @@ Common::createDBCleanupReq($dbpath) if($isEmpty and -f $dbfile and Common::isDBW
 
 if($isEmpty and $isScheduledJob == 0 and $silentBackupFlag == 0) {
 	unlink($pidPath);
-	Common::loadNotifications() and
-	Common::setNotification('alert_status_update', $AppConfig::alertErrCodes{'no_files_to_backup'}) and Common::saveNotifications();
+	if(Common::loadNotifications() and Common::lockCriticalUpdate("notification")) {
+		Common::setNotification('alert_status_update', $AppConfig::alertErrCodes{'no_files_to_backup'}) and Common::saveNotifications();
+		Common::unlockCriticalUpdate("notification");
+	}
+
 	Common::retreat(["\n",$AppConfig::errStr]);
 }
-elsif (not $isEmpty and Common::loadNotifications() and
-	(Common::getNotifications('alert_status_update') eq $AppConfig::alertErrCodes{'no_files_to_backup'})) {
+elsif (not $isEmpty and Common::loadNotifications() and Common::lockCriticalUpdate("notification")) {
+	if(Common::getNotifications('alert_status_update') eq $AppConfig::alertErrCodes{'no_files_to_backup'}) {
 		Common::setNotification('alert_status_update', 0) and Common::saveNotifications();
+	}
+
+	Common::unlockCriticalUpdate("notification");
 }
 
 # check if there is any entry to be backed up if its CDP
@@ -288,9 +304,10 @@ if($iscdp) {
 createLogFiles("BACKUP");
 createBackupTypeFile();
 
-if ((not $iscdp) and Common::loadAppPath() and Common::loadServicePath() and Common::loadNotifications()) {
+if ((not $iscdp) and Common::loadAppPath() and Common::loadServicePath() and Common::loadNotifications() and Common::lockCriticalUpdate("notification")) {
 	Common::setNotification('update_backup_progress', ((split("/", $outputFilePath))[-1]));
 	Common::saveNotifications();
+	Common::unlockCriticalUpdate("notification");
 }
 
 my $scanned = 0;
@@ -469,7 +486,7 @@ unless($iscdp) {
 	}
 }
 
-# Common::getCursorPos(40,"") if(-e $pidPath); #Resetting cursor position
+Common::writeAsJSON($totalFileCountFile, {});
 startBackup() if(!$isEmpty and !$cutOffReached and -e $pidPath);
 exit_cleanup($errStr);
 
@@ -657,8 +674,10 @@ START:
 		close INFO;
 		chmod $filePermission, $info_file;
 		unlink($minimalErrorRetry) if (-f $minimalErrorRetry);
+		sleep 5; #5 Sec
 		Common::traceLog("retrycount: $retrycount");
 		$engineID = 1;
+		Common::loadUserConfiguration(); #Reloading to handle domain connection failure case
 		goto START;
 	}
 }
@@ -678,8 +697,9 @@ sub displayBackupProgress {
 	my $temp = $totalEngineBackup;
 	# our ($cumulativeCount, $cumulativeTransRate) = (0)x2;
 	my $playPause  = 'running';
-	my $moreOrLess = 'less';
 	my ($redrawForLess, $drawForPlayPause) = (0) x 2;
+	my $moreOrLess = 'less';
+    $moreOrLess    = 'more' if(Common::checkScreeSize());
 
 	while(1) {
 		last if(!-f $pidPath || -f $progexitfile);
@@ -968,7 +988,10 @@ Common::traceLog("CDP NP ITEM: $filepath # reason:$reason");
 			my $fileinf	= Sqlite::getFileInfoByFilePath($item);
 
 			# Check if file is already in sync or not
-			next if($fileinf && $fileinf->{'BACKUP_STATUS'} eq $AppConfig::dbfilestats{'BACKEDUP'});
+			if($fileinf && $fileinf->{'BACKUP_STATUS'} eq $AppConfig::dbfilestats{'BACKEDUP'}) {
+				next if(-f $item);
+				$readySyncedFiles-- if($readySyncedFiles); #Added to handle when file is missing but still it counted as sync.
+			}
 
 			# Check if file is ok for CDP or not.
 			if($iscdp) {
@@ -1084,9 +1107,11 @@ GENLAST:
 	close(TRACEPERMISSIONERRORFILE);
 
 	if($iscdp) {
-		Common::fileWrite($totalFileCountFile, $totalFiles);
+		# Common::fileWrite($totalFileCountFile, $totalFiles);
+		Common::loadAndWriteAsJSON($totalFileCountFile, {$AppConfig::totalFileKey => $totalFiles});
 	} else {
-		Common::fileWrite($totalFileCountFile, ($totalFiles - $readySyncedFiles));
+		# Common::fileWrite($totalFileCountFile, ($totalFiles - $readySyncedFiles));
+		Common::loadAndWriteAsJSON($totalFileCountFile, {$AppConfig::totalFileKey => ($totalFiles - $readySyncedFiles)});
 	}
 
 	chmod $filePermission, $totalFileCountFile;
@@ -1106,7 +1131,7 @@ GENLAST:
 # Subroutine		: cancelSubRoutine
 # Objective			: Call if user cancel the execution of script. It will do all require cleanup before exiting.
 # Added By			: Arnab Gupta
-# Modified By		: Dhritikana, Sabin Cheruvattil
+# Modified By		: Dhritikana, Sabin Cheruvattil, Senthil Pandian
 #****************************************************************************************************
 sub cancelSubRoutine {
 	if($pidOperationFlag eq "GenerateFile") {
@@ -1126,8 +1151,11 @@ sub cancelSubRoutine {
     exit(0) if($pidOperationFlag =~ /DisplayProgress|ChildProcess|ExitCleanup/);
 
 	if($pidOperationFlag eq "main") {
-		my $evsCmd = "ps $psOption | grep \"$idevsutilBinaryName\" | grep \'$backupUtfFile\'";
-		$evsCmd = Common::updateLocaleCmd($evsCmd);
+		my $tempBackupUtfFile = $backupUtfFile;
+		$tempBackupUtfFile =~ s/\[/\\[/;
+		$tempBackupUtfFile =~ s/{/[{]/;
+		my $evsCmd = "ps $psOption | grep \"$idevsutilBinaryName\" | grep \'$tempBackupUtfFile\'";
+		$evsCmd = $evsCmd;
 		$evsRunning = `$evsCmd`;
 
 		@evsRunningArr = split("\n", $evsRunning);
@@ -1224,8 +1252,10 @@ Common::traceLog("pid not found"); #Needs to be removed later
 				}
 
 				if ($errStr eq Constants->CONST->{'operationFailCutoff'}) {
-					Common::loadNotifications() and
+					if(Common::loadNotifications() and Common::lockCriticalUpdate("notification")) {
 						Common::setNotification('alert_status_update', $AppConfig::alertErrCodes{'scheduled_cut_off'}) and Common::saveNotifications();
+						Common::unlockCriticalUpdate("notification");
+					}
 				}
 			}
 			else {
@@ -1256,7 +1286,7 @@ Common::traceLog("pid not found"); #Needs to be removed later
 	}
 Common::traceLog("errStr3:$errStr"); #Needs to be removed later
 
-	if(-d dirname($pidPath)) {
+	if($pidPath and -d dirname($pidPath)) {
 		unlink($pidPath) if(!Common::fileWrite($progexitfile, '1'));
 	}
 
@@ -1271,7 +1301,7 @@ Common::traceLog("errStr3:$errStr"); #Needs to be removed later
 	# rmtree($evsTempDirPath) if(-d $evsTempDirPath);
     Common::removeItems([$retryinfo, $fileForSize, $trfSizeAndCountFile, $jobCancelFile, $progexitfile, $errorDir, $pidPath]);
 
-	if (-f $outputFilePath and -s _ > 0) {
+	if ((-f $outputFilePath) and (!-z $outputFilePath)) {
 		my $finalOutFile = $outputFilePath;
 		if($iscdp && $filesConsideredCount == 0) {
 			$finalOutFile =~ s/_Running_/_NoFiles\_/;
@@ -1279,10 +1309,12 @@ Common::traceLog("errStr3:$errStr"); #Needs to be removed later
 			$finalOutFile =~ s/_Running_/_$status\_/;
 		}
 		move($outputFilePath, $finalOutFile);
+		Common::updateLastBackupStatus($AppConfig::backup, $status, basename($finalOutFile));
 
-		if (Common::loadNotifications()) {
+		if (Common::loadNotifications() and Common::lockCriticalUpdate("notification")) {
 			Common::setNotification('update_backup_progress', ((split("/", $finalOutFile))[-1])) if(!$iscdp);
 			Common::setNotification('get_logs') and Common::saveNotifications();
+			Common::unlockCriticalUpdate("notification");
 		}
 
 		$outputFilePath = $finalOutFile;
@@ -1308,6 +1340,7 @@ Common::traceLog("errStr3:$errStr"); #Needs to be removed later
 		}
 
         #Above function display summary on stdout once backup job has completed.
+		# upload log
 		Common::saveLog($finalOutFile, 0);
 
 		$lpath	= basename($outputFilePath);
@@ -1328,6 +1361,7 @@ Common::traceLog("errStr3:$errStr"); #Needs to be removed later
 		);
 		
 		$bkpsummary{'summary'} = Common::getWebViewSummary(\%bkpsummary);
+		# web view xml upload
 		Common::saveWebViewXML(\%bkpsummary);
 	}
 
@@ -1366,6 +1400,7 @@ Common::traceLog("errStr3:$errStr"); #Needs to be removed later
 	if ($successFiles > 0) {
 		my $childProc = fork();
 		if ($childProc == 0) {
+			$AppConfig::callerEnv = 'BACKGROUND'; #Added to ignore the error display
 			getQuota();
 			exit(0);
 		}
@@ -1461,7 +1496,7 @@ sub doBackupOperation {
 	my $retry_failedfiles_index = $_[3];
 	my $doBackupOperationErrorFile = "$jobRunningDir/doBackuperror.txt_".$operationEngineId;
 	@parameter_list				= split /\' \'/,$parameters,3;
-	$backupUtfFile				= getOperationFile(Constants->CONST->{'BackupOp'}, $parameter_list[2] ,$parameter_list[1] ,$parameter_list[0],$operationEngineId);
+	$backupUtfFile				= getOperationFile(Constants->CONST->{'BackupOp'}, $parameter_list[2], $parameter_list[1], $parameter_list[0], $operationEngineId);
 	open(my $startPidFileLock, ">>", $engineLockFile) or return 0;
 	unless(flock($startPidFileLock, LOCK_SH)) {
 		Common::traceLog("Failed to lock engine file");
@@ -1499,7 +1534,7 @@ sub doBackupOperation {
 	if($backupPid == 0) {
 		$pidOperationFlag = 'dobackup';
 		if(-e $pidPath) {
-			system(Common::updateLocaleCmd($idevsutilCommandLine." > /dev/null 2>'$doBackupOperationErrorFile'"));
+			system($idevsutilCommandLine." > /dev/null 2>'$doBackupOperationErrorFile'");
 			if(-e $doBackupOperationErrorFile && -s _) {
 				my $error = Common::getFileContents($doBackupOperationErrorFile);
 				if($error ne '' and $error !~ /no version information available/) {

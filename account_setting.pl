@@ -140,9 +140,22 @@ sub init {
 			}
 
 			unless (Common::hasPythonBinary()) {
-				Common::display(['downloading_python_binary', '... ']);
+				$nl = 1;
+				if($AppConfig::isautoinstall) {
+					Common::display(['downloading_auto_python_binary', '... '], 0);
+				}
+				else {
+					Common::display(['downloading_python_binary', '... ']);
+				}
+
 				Common::downloadPythonBinary() or Common::retreat('unable_to_download_python_binary');
-				Common::display('python_binary_downloaded_successfully');
+
+				if($AppConfig::isautoinstall) {
+					Common::display('ok_c');
+				}
+				else {
+					Common::display('python_binary_downloaded_successfully');
+				}
 			}
 
 			if ($AppConfig::appType eq 'IDrive') {
@@ -218,12 +231,13 @@ sub init {
 
 	# Section to switch user - Start
 	unless ($uname eq $loggedInUser) {
-		Common::display(["\nSwitching user from \"", $loggedInUser , "\" to \"", $uname , "\" will stop all your running jobs and disable all your schedules for \"", $loggedInUser, "\". Do you really want to continue (y/n)?"], 1);
+		Common::display(["\nSwitching user from \"", $loggedInUser , "\" to \"", $uname, "\" will stop all your running jobs and disable all your schedules for \"", $loggedInUser, "\". Do you really want to continue (y/n)?"], 1);
 		my $userChoice = Common::getAndValidate(['enter_your_choice'], "YN_choice", 1);
 		if (lc($userChoice) eq 'n' ) {
 			cleanUp();
 			return;
 		}
+
 		Common::stopDashboardService($AppConfig::mcUser, Common::getAppPath());
 	}
 
@@ -285,10 +299,11 @@ sub init {
 		}
 
 		Common::setUserConfiguration('USERNAME', $uname);
+		
 		Common::createUserDir($isAccountConfigured); #unless($isAccountConfigured); Commented by Senthil to create dir for Local Restore
 		Common::saveUserQuota(@responseData) or Common::retreat("Error in save user quota");
-		Common::saveServerAddress(@responseData);
 		Common::setUserConfiguration(@responseData);
+		Common::saveServerAddress(@responseData);
 	}
 
 	# creates all password files
@@ -340,8 +355,8 @@ sub init {
 			# Common::createUTF8File('DEFAULTCONFIG') or Common::retreat('failed_to_create_utf8_file');
 		}
 
-		Common::configAccount($configType, $encKey);
 		Common::setUserConfiguration('ENCRYPTIONTYPE', $configType);
+		Common::configAccount($configType, $encKey);
 		Common::display(['encryption_key_is_set_successfully', "\n"], 1);
 		$isAccountConfigured = 0;
 		if (-e Common::getUserConfigurationFile()) {
@@ -377,13 +392,17 @@ sub init {
 		my $userProfileDir  = Common::getUserProfilePath();
 		if ($responseData[0]->{'STATUS'} eq 'FAILURE') {
 			if ($responseData[0]->{'MSG'} eq 'encryption_verification_failed') {
-				Common::removeItems($rmCmd) if ($rmCmd =~ /$userProfileDir/);
+				Common::removeItems($rmCmd) if ($rmCmd and $rmCmd =~ /$userProfileDir/);
 				if (-f $rmCmdORG){
 					my $localermCmdORG = Common::updateLocaleCmd("mv \"$rmCmdORG\" \"$rmCmd\" 2>/dev/null");
 					`$localermCmdORG` ;
 				}
-				Common::loadNotifications() and
+
+				if(Common::loadNotifications() and Common::lockCriticalUpdate("notification")) {
 					Common::setNotification('alert_status_update', $AppConfig::alertErrCodes{'pvt_verification_failed'}) and Common::saveNotifications();
+					Common::unlockCriticalUpdate("notification");
+				}
+
 				Common::retreat('invalid_enc_key');
 			}
 			elsif ($responseData[0]->{'MSG'} =~ /$AppConfig::proxyNetworkError/i) {
@@ -648,6 +667,8 @@ sub init {
 				last if (Common::loadNS() and not Common::getNS('update_device_info'));
 				sleep(3);
 			}
+
+			Common::setCDPRescanCRON($AppConfig::defrescanday, $AppConfig::defrescanhr, $AppConfig::defrescanmin, 1);
 			Common::display(['syncing_completed', "\n", 'note_for_replace_computer', "\n"]);
 		}
 		else {
@@ -658,7 +679,7 @@ sub init {
 	if($AppConfig::isautoinstall) {
 		Common::display(['scripts_are_setup_and_ready_to_use', '.', "\n"]);
 		Common::display(['use_link_to_use_linux_web', '.']);
-		Common::display([$AppConfig::IDriveWebURL]);
+		Common::display([$AppConfig::IDriveWebURL, "\n"]);
 	}
 	
 	cleanUp();
@@ -674,7 +695,7 @@ sub init {
 #*****************************************************************************************************
 sub isFedora34 {
 	my $os = Common::getOSBuild();
-	return 1 if($os->{'os'} =~ 'fedora' and $os->{'build'} == 34);
+	return 1 if($os->{'os'} =~ 'fedora' and $os->{'build'} >= 34);
 	return 0;
 }
 
@@ -740,7 +761,8 @@ sub checkFedora34Packages {
 	exit(0) if(lc($userChoice) eq 'n');
 
 	my $dnfcmd = "dnf -y install " . join(" ", @dnfPacks);
-	$dnfcmd = Common::getSudoSuCMD($dnfcmd, 'please_provide_root_pwd_for_init_packs');
+	my $sudomsgtoken = Common::hasSudo()? 'please_provide_sudo_pwd_for_init_packs' : 'please_provide_root_pwd_for_init_packs';
+	$dnfcmd = Common::getSudoSuCMD($dnfcmd, $sudomsgtoken);
 	system($dnfcmd);
 
 	# Again check for the missing packages
@@ -784,7 +806,35 @@ sub verifyExistingBackupLocation {
 				push @devices, $_;
 			}
 
-			unless (Common::findMyDevice(\@devices)) {
+			my $isBucketAvailable = 1;
+			unless(scalar(@devices)>0) {
+				$isBucketAvailable = 0;
+				# Common::display('no_backup_location_found_please_create_new_one');
+				# return Common::createBucket();
+			} else {
+				unless (Common::findMyDevice(\@devices)) {
+					#Ignoring deleted buckets
+					my @availableBuckets;
+					foreach (@devices) {
+						next if ($_->{'in_trash'} eq '1');
+						push @availableBuckets, $_;
+					}
+					unless(scalar(@availableBuckets)) {
+						$isBucketAvailable = 0;
+						# Common::display('no_backup_location_found_please_create_new_one');
+						# return Common::createBucket();
+					} else {
+						my %buckets = Common::findMyBuckets(\@availableBuckets);
+						unless (scalar(keys %buckets)) {
+							$isBucketAvailable = 0;
+						} else {
+							Common::getExistingBucketConfirmation(\@devices, \%buckets);
+						}
+					}
+				}
+			}
+
+			unless($isBucketAvailable) {
 				$isAccountConfigured = 0;
 				unlink($qtf) if(-f $qtf);
 				unlink(Common::getUserConfigurationFile()) if (-f Common::getUserConfigurationFile());
@@ -899,6 +949,7 @@ sub getCDPRescanInterval {
 	my $dom		= (split(' ', $cmd))[-2];
 
 	$dom		= '0' unless($dom);
+Common::traceLog("dom:$dom#"); #Added to debug
 	$dom		= sprintf("%02d", $dom) if($dom =~ /\d/);
 
 	my $statmsg	= '';
@@ -930,17 +981,22 @@ sub processZIPPath {
 # Modified By			: Yogesh Kumar
 #****************************************************************************************************/
 sub manageDashboardJob {
-	Common::loadCrontab(1);
-	my $curdashscript = Common::getCrontab($AppConfig::dashbtask, $AppConfig::dashbtask, '{cmd}');
 	if(!$_[0]) {
+		Common::lockCriticalUpdate("cron");
+		Common::loadCrontab(1);
+		my $curdashscript = Common::getCrontab($AppConfig::dashbtask, $AppConfig::dashbtask, '{cmd}');
+
 		# account not configured | no cron tab entry | dashboard script empty
 		if (!$curdashscript || $curdashscript eq '') {
 			Common::createCrontab($AppConfig::dashbtask, $AppConfig::dashbtask);
 			Common::setCronCMD($AppConfig::dashbtask, $AppConfig::dashbtask);
 			Common::saveCrontab();
+			Common::unlockCriticalUpdate("cron");
 			Common::checkAndStartDashboard(0);
 			return 1;
 		}
+
+		Common::unlockCriticalUpdate("cron");
 
 		my $newdashscript = Common::getDashboardScript();
 		# check same path or not
@@ -956,18 +1012,23 @@ sub manageDashboardJob {
 		}
 	}
 
+	Common::lockCriticalUpdate("cron");
+	Common::loadCrontab(1);
+	my $curdashscript = Common::getCrontab($AppConfig::dashbtask, $AppConfig::dashbtask, '{cmd}');
+
+	Common::createCrontab($AppConfig::dashbtask, $AppConfig::dashbtask);
+	Common::setCronCMD($AppConfig::dashbtask, $AppConfig::dashbtask);
+	Common::saveCrontab();
+	Common::unlockCriticalUpdate("cron");
+	
 	# kill the running dashboard job
 	$curdashscript = dirname($curdashscript);
 	$curdashscript =~ s/$AppConfig::idriveLibPath//;
 	Common::stopDashboardService($AppConfig::mcUser, $curdashscript);
 
-	Common::createCrontab($AppConfig::dashbtask, $AppConfig::dashbtask);
-	Common::setCronCMD($AppConfig::dashbtask, $AppConfig::dashbtask);
-	Common::saveCrontab();
-
 	# kill all the running jobs belongs to this user
 	my $cmd = sprintf("%s %s 'allOp' %s 0 'allType' %s %s", $AppConfig::perlBin, Common::getScript('job_termination', 1), Common::getUsername(), $AppConfig::mcUser, 'operation_cancelled_due_to_cron_reset');
-	$cmd = Common::updateLocaleCmd($cmd);
+	# $cmd = Common::updateLocaleCmd($cmd);
 	`$cmd 1>/dev/null 2>/dev/null`;
 	Common::checkAndStartDashboard(0);
 }
@@ -977,23 +1038,34 @@ sub manageDashboardJob {
 # Objective				: This method checks the status of cron and launches it
 # Added By				: Sabin Cheruvattil
 # Modified By			: Yogesh Kumar
-#****************************************************************************************************/
+#*****************************************************************************************************
 sub manageCRONLaunch {
 	Common::removeFallBackCRONEntry() if($AppConfig::mcUser eq 'root');
 
-	unless(Common::checkCRONServiceStatus() == Common::CRON_RUNNING) {
+	if(Common::checkCRONServiceStatus() != Common::CRON_RUNNING) {
 		Common::display(["\n", 'setting_up_cron_service', ' ', 'please_wait_title', '...']);
-		my $sudoprompt = 'please_provide_' . ((Common::isUbuntu() || Common::isGentoo())? 'sudoers' : 'root') . '_pwd_for_cron';
-		my $sudosucmd = Common::getSudoSuCRONPerlCMD('installcron', $sudoprompt);
-		my $res = system($sudosucmd);
 
-		if (Common::checkCRONServiceStatus() == Common::CRON_RUNNING) {
-			Common::display(['cron_service_started',"\n"]);
-		}
-		else {
-			Common::display('unable_to_start_cron_service', 0);
-			Common::display('please_make_sure_you_are_sudoers_list') if($res);
-			Common::display("\n");
+		my $maxtry = $AppConfig::maxChoiceRetry;
+		while($maxtry) {
+			$maxtry--;
+
+			my $sudoprompt = 'please_provide_' . (Common::hasSudo()? 'sudoers' : 'root') . '_pwd_for_cron';
+			my $sudosucmd = Common::getSudoSuCRONPerlCMD('installcron', $sudoprompt);
+			my $res = system($sudosucmd);
+
+			if (Common::checkCRONServiceStatus() == Common::CRON_RUNNING) {
+				Common::display(['cron_service_started',"\n"]);
+				last;
+			}
+			else {
+				Common::display('unable_to_start_cron_service', 0);
+				Common::display('please_make_sure_you_are_sudoers_list') if($res);
+				Common::display("\n");
+			}
+
+			if(!$maxtry) {
+				Common::display(["\n", 'your_max_attempt_reached', "\n"]);
+			}
 		}
 
 		return 1;
@@ -1003,7 +1075,7 @@ sub manageCRONLaunch {
 	# if the running version is older, replace the link and update the lock file to self restart
 	my @lockinfo = Common::getCRONLockInfo();
 	if (Common::versioncompare($AppConfig::version, $lockinfo[1]) == 1) {
-		my $sudoprompt = 'please_provide_' . ((Common::isUbuntu() || Common::isGentoo())? 'sudoers' : 'root') . '_pwd_for_cron_update';
+		my $sudoprompt = 'please_provide_' . (Common::hasSudo()? 'sudoers' : 'root') . '_pwd_for_cron_update';
 		my $sudosucmd = Common::getSudoSuCRONPerlCMD('restartidriveservices', $sudoprompt);
 		my $res = system($sudosucmd);
 		if($res) {
@@ -1031,6 +1103,7 @@ sub processManualUpdate {
 		Common::deleteDeprecatedScripts();
 		Common::fixPathDeprecations();
 		Common::fixBackupsetDeprecations();
+		Common::removeDeprecatedDB();
 		Common::addCDPWatcherToCRON(1);
 		Common::setCDPInotifySupport();
 		Common::startCDPWatcher();
@@ -1091,7 +1164,7 @@ sub processManualUpdate {
 		}
 
 		# if cron link is absent, reinstall the cron | this case can be caused by un-installation from other installation
-		my $sudoprompt = 'please_provide_' . ((Common::isUbuntu() || Common::isGentoo())? 'sudoers' : 'root') . '_pwd_for_cron_update';
+		my $sudoprompt = 'please_provide_' . (Common::hasSudo()? 'sudoers' : 'root') . '_pwd_for_cron_update';
 		my $sudosucmd = Common::getSudoSuCRONPerlCMD('restartidriveservices', $sudoprompt);
 
 		 Common::display(system($sudosucmd) == 0? 'cron_service_has_been_restarted' : 'failed_to_restart_idrive_services');
@@ -1562,6 +1635,7 @@ sub installUserFiles {
 
 	my $file;
 	foreach (keys %filesToInstall) {
+		my $schemakey = $_;
 		$file = $filesToInstall{$_}{'file'};
 		#Skipping for Archive as we not keeping any default backup set: Senthil
 
@@ -1578,6 +1652,8 @@ sub installUserFiles {
 			Common::display(["\n",'unable_to_create_file', " \"$file\"." ]);
 			return 0;
 		}
+
+		Common::fileWrite($file . ".info", "") if($schemakey =~ /exclude/);
 	}
 
 	return 1;
@@ -1811,19 +1887,26 @@ sub rescanNow {
 sub confirmDuplicateDashboardInstance {
 	return 0 if ($AppConfig::appType ne 'IDrive');
 
+	Common::lockCriticalUpdate("cron");
 	Common::loadCrontab(1);
 	my $curdashscript = Common::getCrontab($AppConfig::dashbtask, $AppConfig::dashbtask, '{cmd}');
 	my $curdashscriptdir = (($curdashscript && $curdashscript ne '')? dirname($curdashscript) . '/' : '');
 	# compare with current, if same return
-	return 0 if ($curdashscriptdir eq '' || $curdashscriptdir eq Common::getAppPath());
+	if ($curdashscriptdir eq '' || $curdashscriptdir eq Common::getAppPath()) {
+		Common::unlockCriticalUpdate("cron");
+		return 0;
+	}
 
 	# check existing dashboard path
 	unless(-f $curdashscript) {
 		Common::createCrontab($AppConfig::dashbtask, $AppConfig::dashbtask);
 		Common::setCronCMD($AppConfig::dashbtask, $AppConfig::dashbtask);
 		Common::saveCrontab();
+		Common::unlockCriticalUpdate("cron");
 		return 0;
 	}
+
+	Common::unlockCriticalUpdate("cron");
 
 	my $newdashscript = Common::getDashboardScript();
 	# check same path or not

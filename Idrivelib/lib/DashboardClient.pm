@@ -139,9 +139,11 @@ sub init {
 					unless (Common::findMyDevice(\@devices)) {
 						Common::traceLog('backup_location_is_adopted_by_another_machine');
 						setUserConfiguration('BACKUPLOCATION', '');
+						Common::lockCriticalUpdate("cron");
 						Common::loadCrontab();
 						Common::setCrontab('otherInfo', 'settings', {'status' => 'INACTIVE'}, ' ');
 						Common::saveCrontab(0);
+						Common::unlockCriticalUpdate("cron");
 						end();
 					}
 				}
@@ -151,6 +153,7 @@ sub init {
 				my $cmd = sprintf("%s %s 1 0", $AppConfig::perlBin, Common::getScript('logout', 1));
 				$cmd = Common::updateLocaleCmd($cmd);
 				`$cmd`;
+				Common::traceLog('logout');
 			}
 		}
 
@@ -1658,7 +1661,11 @@ debug('get file size');
 
 			if ($ic) {
 				return 1 if ($ic < 0);
-				loadNotifications() and setNotification(sprintf("get_%sset_content", $jobName)) and saveNotifications();
+				if(loadNotifications() and Common::lockCriticalUpdate("notification")) {
+					setNotification(sprintf("get_%sset_content", $jobName)) and saveNotifications();
+					Common::unlockCriticalUpdate("notification");
+				}
+
 				return 1;
 			}
 
@@ -1845,7 +1852,10 @@ debug('get file size');
 						(getNS(sprintf("update_%s_progress", $_[0])) =~ /_Running_/)) {
 					my $nv = getNS(sprintf("update_%s_progress", $_[0]));
 					$nv =~ s/_Running_/_Aborted_/g;
-					loadNotifications() and setNotification(sprintf("update_%s_progress", $_[0]), $nv) and saveNotifications();
+					if(loadNotifications() and Common::lockCriticalUpdate("notification")) {
+						setNotification(sprintf("update_%s_progress", $_[0]), $nv) and saveNotifications();
+						Common::unlockCriticalUpdate("notification");
+					}
 				}
 
 				my $cmd = ("$AppConfig::perlBin " . Common::getScript('job_termination', 1));
@@ -2037,7 +2047,11 @@ debug('get file size');
 					my $nv = Common::getNotifications(sprintf("update_%s_progress", $jobName));
 					$nv =~ s/_Running_/_Aborted_/g;
 
-					loadNotifications() and setNotification(sprintf("update_%s_progress", $jobName), $nv) and saveNotifications();
+					if(loadNotifications() and Common::lockCriticalUpdate("notification")) {
+						setNotification(sprintf("update_%s_progress", $jobName), $nv) and saveNotifications();
+						Common::unlockCriticalUpdate("notification");
+					}
+
 					unlink($pidFile);
 				}
 				return 1;
@@ -2134,9 +2148,10 @@ debug('get file size');
 							$readTillEOF = 0;
 						}
 						else {
-							if (-f $pidFile and loadNotifications() and (Common::getNotifications(sprintf("update_%s_progress", $_[0])) =~ /_Running_/)) {
+							if (-f $pidFile and loadNotifications() and Common::lockCriticalUpdate("notification") and (Common::getNotifications(sprintf("update_%s_progress", $_[0])) =~ /_Running_/)) {
 								if (-f getCatfile(Common::getJobsPath($jobName), $AppConfig::logPidFile)) {
 									my $logStatus = Common::checkAndRenameFileWithStatus(Common::getJobsPath($jobName), $jobName);
+									Common::unlockCriticalUpdate("notification");
 									close($fh);
 									exit(0);
 								}
@@ -2144,8 +2159,12 @@ debug('get file size');
 								my $nv = Common::getNotifications(sprintf("update_%s_progress", $jobName));
 								$nv =~ s/_Running_/_Aborted_/g;
 								setNotification(sprintf("update_%s_progress", $jobName), $nv) and saveNotifications();
+								Common::unlockCriticalUpdate("notification");
 								unlink($pidFile);
 							}
+
+							Common::unlockCriticalUpdate("notification");
+
 							close($fh);
 							exit(0);
 						}
@@ -2206,13 +2225,17 @@ debug('get file size');
 				elsif ($bl[0] eq $rl[0]) {
 					$userConfig[0]->{'RESTOREFROM'} = ($AppConfig::deviceIDPrefix .
 						$deviceDetails{'device_id'} .$AppConfig::deviceIDSuffix ."#" . $bl[1]);
-					loadNotifications() and setNotification('register_dashboard') and saveNotifications();
+					if (loadNotifications() and Common::lockCriticalUpdate("notification")) {
+						setNotification('register_dashboard') and saveNotifications();
+						Common::unlockCriticalUpdate("notification");
+					}
 				}
 			}
 			elsif (exists $userConfig[0]->{'BDA'} and int($userConfig[0]->{'BDA'}) and Common::isLoggedin()) {
 				my $cmd = sprintf("%s %s 1 1 1>/dev/null 2>/dev/null &", $AppConfig::perlBin, Common::getScript('logout', 1));
 				$cmd = Common::updateLocaleCmd($cmd);
 				`$cmd`;
+				Common::traceLog('logout');
 			}
 
 			if (Common::canKernelSupportInotify()) {
@@ -2223,10 +2246,13 @@ debug('get file size');
 					my $jt	= $AppConfig::cdp;
 					my $jn	= "default_backupset";
 					
+					Common::lockCriticalUpdate("cron");
+					Common::loadCrontab();
 					Common::createCrontab($jt, $jn);
 					Common::setCrontab($jt, $jn, {'settings' => {'status' => 'disabled'}});
 					Common::setCronCMD($jt, $jn);
 					Common::saveCrontab(0);
+					Common::unlockCriticalUpdate("cron");
 				}
 	
 				if(defined($userConfig[0]->{'RESCANINTVL'}) && $userConfig[0]->{'RESCANINTVL'} ne getUserConfiguration('RESCANINTVL')) {
@@ -2550,7 +2576,11 @@ debug('get file size');
 
 			if ($ic) {
 				return 1 if ($ic < 0);
-				loadNotifications() and setNotification('get_settings') and saveNotifications();
+				if(loadNotifications() and Common::lockCriticalUpdate("notification")) {
+					setNotification('get_settings') and saveNotifications();
+					Common::unlockCriticalUpdate("notification");
+				}
+
 				return 1;
 			}
 
@@ -2609,7 +2639,25 @@ debug('get file size');
 
 		'remote_install' => sub {
 			my %status;
-			unless (exists $content->{'installdependencies'}) {
+			
+			if (exists $content->{'installdependencies'}) {
+				$status{'status'} = AppConfig::SUCCESS;
+				my $params = Idrivelib::get_dashboard_params({
+					'0'   => '2',
+					'1017'=> $data->{1017},
+					'111' => $AppConfig::evsVersion,
+					'113' => lc($AppConfig::deviceType),
+					'130' => zlibCompress(to_json(\%status)),
+					#'119' => 1,
+					'101' => $at
+				}, 1, 0);
+				$params->{host} = getRemoteManageIP();
+				#$params->{port} = $AppConfig::NSPort;
+				$params->{method} = 'POST';
+				$params->{json} = 1;
+				my $response = request($params);
+			}
+			else {
 				$status{'status'} = AppConfig::FAILURE;
 				$status{'installdependencies'} = 'yes';
 				$status{'dependencies'} = "";
@@ -2637,34 +2685,15 @@ debug('get file size');
 				$params->{host} = getRemoteManageIP();
 				$params->{method} = 'POST';
 				$params->{json} = 1;
-				my $response = request($params);
-				return 1;
-			}
-			else {
-				$status{'status'} = AppConfig::SUCCESS;
-				my $params = Idrivelib::get_dashboard_params({
-					'0'   => '2',
-					'1017'=> $data->{1017},
-					'111' => $AppConfig::evsVersion,
-					'113' => lc($AppConfig::deviceType),
-					'130' => zlibCompress(to_json(\%status)),
-					#'119' => 1,
-					'101' => $at
-				}, 1, 0);
-				$params->{host} = getRemoteManageIP();
-				#$params->{port} = $AppConfig::NSPort;
-				$params->{method} = 'POST';
-				$params->{json} = 1;
-				my $response = request($params);
-	
-				return 1;
-			}
 
+				my $response = request($params);
+				return 1;
+			}
+			
 			my $cmd = sprintf("%s %s silent &", $AppConfig::perlBin, Common::getScript('check_for_update', 1));
-			$cmd = Common::updateLocaleCmd($cmd);
 
 			unless (system($cmd) == 0) {
-			$status{'status'} = AppConfig::FAILURE;
+				$status{'status'} = AppConfig::FAILURE;
 			}
 			else {
 				$status{'status'} = AppConfig::SUCCESS;
@@ -2735,7 +2764,7 @@ debug('get file size');
 				$errmsg = 'please_reconfigure_account_from_backend';
 				$status = AppConfig::FAILURE;
 			}
-			elsif (exists $content->{'crontab'}{getUsername()} and Common::loadCrontab()) {
+			elsif (exists $content->{'crontab'}{getUsername()} and Common::loadCrontab() and Common::lockCriticalUpdate("cron")) {
 				foreach my $jobType (keys %{$content->{'crontab'}{getUsername()}}) {
 					last if ($errmsg ne '');
 
@@ -2790,6 +2819,8 @@ debug('backup_job_is_already_in_progress_try_again');
 					$status = AppConfig::SUCCESS;
 					Common::saveCrontab((($ic > -1) ? $ic : 0));
 				}
+
+				Common::unlockCriticalUpdate("cron");
 			}
 
 			return 1 if ($ic);
@@ -3126,7 +3157,10 @@ sub syncFilesetSizeOnIntervals {
 				my $response = request($params);
 			}
 			else {
-				loadNotifications() and setNotification(sprintf("get_%sset_content", $backuptype)) and saveNotifications();
+				if(loadNotifications() and Common::lockCriticalUpdate("notification")) {
+					setNotification(sprintf("get_%sset_content", $backuptype)) and saveNotifications();
+					Common::unlockCriticalUpdate("notification");
+				}
 			}
 
 			$lastts = 0;
@@ -3380,13 +3414,16 @@ debug('watch for dashboard login ' . __LINE__);
 					foreach (@{$response->{'DATA'}{'content'}{'device'}}) {
 						if (($_->{'mid'} eq Common::getMachineUID()) and ($_->{'did'} eq $did)) {
 							Common::traceLog('backup_location_is_adopted_by_another_machine');
+							Common::lockCriticalUpdate("cron");
 							Common::loadCrontab();
 							Common::setCrontab('otherInfo', 'settings', {'status' => 'INACTIVE'}, ' ');
 							Common::saveCrontab(0);
+							Common::unlockCriticalUpdate("cron");
 							removeDeviceInfo($_);
 							my $cmd = sprintf("%s %s 1 0", $AppConfig::perlBin, Common::getScript('logout', 1));
 							$cmd = Common::updateLocaleCmd($cmd);
 							`$cmd`;
+							Common::traceLog('logout');
 							setUserConfiguration('BACKUPLOCATION', '');
 							setUserConfiguration('BACKUPLOCATIONSIZE', 0);
 							saveUserConfiguration(0, 1);

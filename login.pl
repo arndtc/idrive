@@ -184,9 +184,8 @@ sub init {
 		# if ($result[0]->{'STATUS'} eq 'FAILURE') {
 			# Common::retreat(ucfirst($result[0]->{'desc'}));
 		# }
-
-		Common::configAccount($configType,$encKey);
 		Common::setUserConfiguration('ENCRYPTIONTYPE', $configType);
+		Common::configAccount($configType,$encKey);
 		Common::display('encryption_key_is_set_successfully',1);
 	}
 	elsif (Common::getUserConfiguration('ENCRYPTIONTYPE') eq 'PRIVATE') {
@@ -208,8 +207,11 @@ sub init {
 		my $userProfileDir  = Common::getUserProfilePath();
 		if (($responseData[0]->{'STATUS'} eq 'FAILURE') and ($responseData[0]->{'MSG'} eq 'encryption_verification_failed')) {
 			Common::removeItems($rmCmd) if($rmCmd =~ /$userProfileDir/);
-			Common::loadNotifications() and
+			if(Common::loadNotifications() and Common::lockCriticalUpdate("notification")) {
 				Common::setNotification('alert_status_update', $AppConfig::alertErrCodes{'pvt_verification_failed'}) and Common::saveNotifications();
+				Common::unlockCriticalUpdate("notification");
+			}
+
 			Common::retreat(['invalid_enc_key']);
 		}
 		elsif (($responseData[0]->{'STATUS'} eq 'FAILURE') and ($responseData[0]->{'MSG'} =~ /$AppConfig::proxyNetworkError/i)) {
@@ -233,9 +235,12 @@ sub init {
 	Common::changeMode(Common::getIDPVTSCHFile());
 
 	if (int(Common::getUserConfiguration('BDA'))) {
-		(Common::loadNotifications() and Common::setNotification('update_acc_status') and
-			Common::saveNotifications() and Common::setUserConfiguration('BDA', 0));
-	};
+		if(Common::loadNotifications() and Common::lockCriticalUpdate("notification")) {
+			Common::setNotification('update_acc_status') and Common::saveNotifications();
+			Common::unlockCriticalUpdate("notification");
+			Common::setUserConfiguration('BDA', 0);
+		}
+	}
 
 	if (Common::getUserConfiguration('DEDUP') eq 'on') {
 		my @result = Common::fetchAllDevices();

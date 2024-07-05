@@ -165,7 +165,7 @@ sub getPid {
 
 	if($parentpid){
 		$findpid = qq{ps -o sid= -p$parentpid | xargs pgrep -s | xargs ps -o pid,command -p | grep idev | grep -v "grep"};
-		$findpid = Common::updateLocaleCmd($findpid);
+		# $findpid = Common::updateLocaleCmd($findpid);
 		my @r    = `$findpid`;
 
 		foreach(@r) {

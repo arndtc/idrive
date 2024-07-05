@@ -10,6 +10,7 @@ use warnings;
 
 use lib map{if(__FILE__ =~ /\//) { substr(__FILE__, 0, rindex(__FILE__, '/'))."/$_";} else { "./$_"; }} qw(Idrivelib/lib);
 
+use File::stat;
 use Common qw(display createCrontab loadCrontab getCrontab prettyPrint setCrontab retreat);
 use AppConfig;
 
@@ -89,8 +90,11 @@ sub init {
 	}
 
 	displayCrontab('tableHeader', " ", " ");
+	# lock here and release from archive cmd fix -- start
+	Common::lockCriticalUpdate("cron");
 	loadCrontab(1);
     checkPeriodicCmdAndUpdateCron(); #Added for Suruchi_2.3_12_6 : Senthil
+	# lock here and release from archive cmd fix -- end
 
 	my $isScheduledJob = 0;
 	for my $i (0 .. $#jobNames) {
@@ -98,7 +102,10 @@ sub init {
 		displayCrontab('table', $jobTypes[$i], $jobNames[$i]);
 		$isScheduledJob = 1 if(getCrontab($jobTypes[$i], $jobNames[$i], '{settings}{status}') eq 'enabled');
 	}
+
 	Common::display('no_schedule_job') unless($isScheduledJob);
+	
+	$AppConfig::crontabmts = stat(Common::getCrontabFile())->mtime;
 	loadCrontab(1);
 
 	tie(my %optionsInfo, 'Tie::IxHash',
@@ -283,6 +290,9 @@ sub scheduleCDPJob {
 		$jobfreq	= $frequency;
 	}
 
+	# load crontab one more time, it may get updated in parallel.
+	Common::lockCriticalUpdate("cron");
+	loadCrontab(1);
 	Common::createCrontab($jobType, $jobName);
 	setCrontab($jobType, $jobName, {'settings' => {'status' => 'enabled'}});
 	setCrontab($jobType, $jobName, {'settings' => {'frequency' => 'hourly'}});
@@ -300,6 +310,7 @@ sub scheduleCDPJob {
 
 	Common::setCronCMD($jobType, $jobName);
 	Common::saveCrontab();
+	Common::unlockCriticalUpdate("cron");
 	
 	Common::setUserConfiguration('CDP', int($frequency));
 	Common::saveUserConfiguration();
@@ -324,6 +335,7 @@ sub updateInfoDetails {
 		Common::setCronCMD($jobType, $jobName);
 		updateEmailIDs($jobType, $jobName);
 	}
+
 	if (getCrontab('cancel', $jobName, '{settings}{status}') eq 'enabled') {
 		Common::setCronCMD('cancel', $jobName);
 	}
@@ -337,12 +349,33 @@ sub updateInfoDetails {
 		Common::setCrontab($jobType, $jobName, 'm', $st);
 	}
 
+	Common::lockCriticalUpdate("cron");
+
+	my $curcronmts = 0;
+	$curcronmts = stat(Common::getCrontabFile())->mtime;
+	if($AppConfig::crontabmts != $curcronmts) {
+		my $modcrontab = getCrontab();
+		loadCrontab(1);
+		my $curcrontab = getCrontab();
+
+		$curcrontab->{$jobType}{$jobName} = $modcrontab->{$jobType}{$jobName};
+
+		if (getCrontab('cancel', $jobName, '{settings}{status}') eq 'enabled') {
+			$curcrontab->{'cancel'}{$jobName} = $modcrontab->{'cancel'}{$jobName};
+		}
+	}
+
 	Common::saveCrontab();
-	if (($jobType eq 'backup') and Common::loadNotifications()) {
+	Common::unlockCriticalUpdate("cron");
+	
+	if (($jobType eq 'backup') and Common::loadNotifications() and Common::lockCriticalUpdate("notification")) {
 		Common::setNotification('get_scheduler') and Common::saveNotifications();
+
 		if (Common::getNotifications('alert_status_update') eq $AppConfig::alertErrCodes{'no_scheduled_jobs'}) {
 			Common::setNotification('alert_status_update', 0) and Common::saveNotifications();
 		}
+
+		Common::unlockCriticalUpdate("notification");
 	}
 
 	#need to check the backup set file to confirm whether it is empty or not.
@@ -422,8 +455,8 @@ sub scheduleBackupJob {
 		retreat("");
 	}
 
-	display(["\n", "your_backup_to_device_name_is", ' "', (index(Common::getUserConfiguration('BACKUPLOCATION'), '#') != -1 )? (split('#', (Common::getUserConfiguration('BACKUPLOCATION'))))[1] :  Common::getUserConfiguration('BACKUPLOCATION'),"\"."], 0);
 	if (Common::getUserConfiguration('DEDUP') eq 'off') {
+		display(["\n", "your_backup_to_device_name_is", ' "', Common::getUserConfiguration('BACKUPLOCATION'),"\"."], 0);
 		display([' ', 'do_you_really_want_to_edit_(_y_n_)', '?']);
 		my $yesorno = Common::getAndValidate('enter_your_choice', 'YN_choice', 1);
 
@@ -431,6 +464,8 @@ sub scheduleBackupJob {
 			Common::setBackupToLocation() or retreat('failed_to_set_backup_location');
 			Common::saveUserConfiguration() or retreat('failed_to_save_user_configuration');
 		}
+	} else {
+		display(["\n", "your_backup_to_device_name_is", ' "', (index(Common::getUserConfiguration('BACKUPLOCATION'), '#') != -1 )? (split('#', (Common::getUserConfiguration('BACKUPLOCATION'))))[1] :  Common::getUserConfiguration('BACKUPLOCATION'),"\"."], 0);
 	}
 
 	display('');
@@ -1037,12 +1072,31 @@ sub disable {
 		$jobType = 'periodic_archive_cleanup' if($jobType eq 'archive');
 
 		display([($jobType eq 'cdp')? uc($jobType) : $jobType, 'job_has_been_disabled_successfully']);
-		if ($jobType eq 'backup') {
-			Common::loadNotifications() and Common::setNotification('alert_status_update', $AppConfig::alertErrCodes{'no_scheduled_jobs'}) and Common::saveNotifications();
+		if (($jobType eq 'backup') and Common::loadNotifications() and Common::lockCriticalUpdate("notification")) {
+			 Common::setNotification('alert_status_update', $AppConfig::alertErrCodes{'no_scheduled_jobs'}) and Common::saveNotifications();
+			 Common::unlockCriticalUpdate("notification")
+		}
+	}
+
+	Common::lockCriticalUpdate("cron");
+
+	my $curcronmts = 0;
+	$curcronmts = stat(Common::getCrontabFile())->mtime;
+	if($AppConfig::crontabmts != $curcronmts) {
+		my $modcrontab = getCrontab();
+		loadCrontab(1);
+		my $curcrontab = getCrontab();
+
+		$curcrontab->{$jobType}{$jobName} = $modcrontab->{$jobType}{$jobName};
+
+		unless($jobType eq 'archive') {
+			$curcrontab->{'cancel'}{$jobName} = $modcrontab->{'cancel'}{$jobName};
 		}
 	}
 
 	Common::saveCrontab();
+	Common::unlockCriticalUpdate("cron");
+
 	return 1;
 }
 
@@ -1303,7 +1357,9 @@ sub getNextDailyScheduleTime {
 	$mon++;
 
 	my $schedhour = getCrontab($jobType, $jobName, '{h}');
-	my $schedmin = getCrontab($jobType, $jobName, '{m}');
+	my $schedmin  = getCrontab($jobType, $jobName, '{m}');
+	$schedhour =~ s/\*//g;
+	$schedmin  =~ s/\*//g;
 	if(($hour<$schedhour) or ($hour==$schedhour and $min<$schedmin)){
 		$nextSchedDate = sprintf("%02d/%02d/%04d %02d:%02d",$mon,$mday,$year,$schedhour,$schedmin);
 	} else {
@@ -1409,7 +1465,8 @@ sub displayScheduledDetail{
 		my $emailStatus = getCrontab($jobType, $jobName, '{settings}{emails}{status}');
 		display(['status',(' ' x 13), ' : ',Common::colorScreenOutput($status)]);
 		if($jobType eq 'backup'){
-			my $backupLoc = (index(Common::getUserConfiguration('BACKUPLOCATION'), '#') != -1 )?(split('#', (Common::getUserConfiguration('BACKUPLOCATION'))))[1]:Common::getUserConfiguration('BACKUPLOCATION');
+			my $backupLoc = Common::getUserConfiguration('BACKUPLOCATION');
+			$backupLoc = (split('#', $backupLoc))[1] if((Common::getUserConfiguration('DEDUP') eq 'on') and $backupLoc =~ /#/);
 			display(['backup_location_lc',(' ' x 4),' : ',$backupLoc]);
 		} else {
 			display(['mount_point',(' ' x 8),' : ',Common::getUserConfiguration('LOCALMOUNTPOINT')]);
@@ -1427,7 +1484,8 @@ sub displayScheduledDetail{
 	}
 	elsif($jobType eq $AppConfig::cdp) {
 		my $status		= getCrontab($jobType, $jobName, '{settings}{status}');
-		my $backuploc	= (index(Common::getUserConfiguration('BACKUPLOCATION'), '#') != -1 )? (split('#', (Common::getUserConfiguration('BACKUPLOCATION'))))[1] : Common::getUserConfiguration('BACKUPLOCATION');
+		my $backuploc	= Common::getUserConfiguration('BACKUPLOCATION');
+		$backuploc	    = (split('#', $backuploc))[1] if((Common::getUserConfiguration('DEDUP') eq 'on') and ($backuploc =~ /#/));
 
 		my $min		= getCrontab($jobType, $jobName, '{m}');
 		$min		=~ s/\*\///;
@@ -1495,11 +1553,11 @@ sub displayScheduledDetail{
 
 #*****************************************************************************************************
 # Subroutine	: checkPeriodicCmdAndUpdateCron
-# In Param		: 
-# Out Param		: 
+# In Param		: NONE
+# Out Param		: NONE
 # Objective		: This subroutine to check periodic cleanup command & disable the job if command is invalid
 # Added By		: Senthil Pandian
-# Modified By	: 
+# Modified By	: Sabin Cheruvattil
 #*****************************************************************************************************
 sub checkPeriodicCmdAndUpdateCron {
     my $jobType  = "archive";
@@ -1520,4 +1578,6 @@ sub checkPeriodicCmdAndUpdateCron {
             }
         }
     }
+
+	Common::unlockCriticalUpdate("cron");
 }

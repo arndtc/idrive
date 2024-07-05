@@ -115,6 +115,7 @@ sub init {
 
 		if($fileType eq 'localrestore') {
             $AppConfig::jobType	= "LocalRestore";
+			Common::display("");
 			getMountPointAndVerifyDB();
 			# (-f $editFilePath)? Common::openEditor('edit', $editFilePath, $fileType) : Common::display(['unable_to_open', '. ', 'invalid_file_path', ' ', '["', $editFilePath, '"]']);
 		} elsif($fileType eq 'restore') {

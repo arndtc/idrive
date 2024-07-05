@@ -129,6 +129,7 @@ sub init {
 # Subroutine		: displayReleaseNotes
 # Objective			: display release notes
 # Added By			: Sabin Cheruvattil
+# Modified By       : Senthil Pandian
 #*************************************************************************************************/
 sub displayReleaseNotes {
 	my $readMePath = Common::getAppPath() . qq(/$AppConfig::idriveScripts{'readme'});
@@ -139,6 +140,7 @@ sub displayReleaseNotes {
 		my $lastVersion = $lastVersion[scalar(@lastVersion) - 1];
 		Common::Chomp(\$lastVersion);
 		Common::display(["\n", 'release_notes', ':', "\n", '=' x 15]);
+		$lastVersion =~ s/\[/\\[/;
 		my $catReadMePathCmd = Common::updateLocaleCmd("cat '$readMePath' | grep -A50 \"$lastVersion\"");
 		Common::display([`$catReadMePathCmd`]);
 		return 1;

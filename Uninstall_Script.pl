@@ -20,7 +20,7 @@ Chomp(\$user);
 
 my ($pidsToBeKilled, $dashboardPidsToBeKilled) = (' ') x 2;
 my (@linesCrontab, @idriveUsersList, @scheduledJobs, %idriveUserInfo) = () x 4;
-my $sudoprompt = "please_provide_" . (Common::isUbuntu() || Common::isGentoo()? 'sudoers' : 'root') . '_pwd_for_uninstall_process';
+my $sudoprompt = "please_provide_" . (Common::hasSudo()? 'sudoers' : 'root') . '_pwd_for_uninstall_process';
 $sudoprompt = Common::getStringConstant($sudoprompt);
 
 my @fileNames = ('account_setting.pl','Account_Setting.pl','archive_cleanup.pl','check_for_update.pl','Check_For_Update.pl','Backup_Script.pl','Constants.pm','Header.pl','Job_Termination_Script.pl','job_termination.pl','login.pl','Login.pl','logout.pl','Operations.pl','readme.txt','Restore_Script.pl','restore_version.pl','Restore_Version.pl','Scheduler_Script.pl','Status_Retrieval_Script.pl','status_retrieval.pl','edit_supported_files.pl','edit_supported_files.pl','View_Log.pl','logs.pl','Uninstall_Script.pl','.updateVersionInfo','.serviceLocation','freshInstall','.forceupdate','wgetLog.txt','AppConfig.pm', 'Common.pm','Configuration.pm', 'Helpers.pm','IxHash.pm', 'Strings.pm','local_backup.pl','local_restore.pl','send_error_report.pl', 'JSON.pm', 'utility.pl', 'view_log.pl','speed_analysis.pl', 'scheduler.pl', 'cron.pl', 'help.pl', 'idrivecron.service', 'idrivecron.conf', 'idrivecron', 'Idrivelib','uninstallcron.pl', 'relinkcron.pl', 'installcron.pl', 'dashboard.pl', 'migrateSuccess', 'migrate.lock', 'ca-certificates.crt', 'perl.core', 'debug.enable', '.haltcdp', 'cdp_client.pl', 'cdp_server.pl');
@@ -32,12 +32,23 @@ Common::loadServicePath() or $noServicePath=1;
 Common::displayHeader();
 
 if(!$noServicePath && !Common::isLoggedin()) {
+	unless (Common::hasPythonBinary()) {
+		Common::display(['downloading_python_binary', '... ']);
+		Common::downloadPythonBinary() or Common::retreat('unable_to_download_python_binary');
+		Common::display('python_binary_downloaded_successfully');
+	}
+
+	#Senthil: Prompting here due to Snigdha_2.32_22_1
+	#We are prompting this if login failed due to wrong proxy. So moved call here
+	Common::askProxyDetails() unless(-f Common::getUserFilePath($AppConfig::proxyInfoFile));
+
 	# SSO login.
 	Common::display(["please_choose_the_method_to_authenticate_your_account", ":"]);
 	my @options = (
 		'idrive_login',
 		'sso_login',
 	);
+
 	Common::displayMenu('', @options);
 	my $loginType = Common::getUserMenuChoice(scalar(@options));
 
@@ -49,7 +60,8 @@ if(!$noServicePath && !Common::isLoggedin()) {
 	my $errorKey = Common::loadUserConfiguration();
 
 	# If this account is not configured then prompt for proxy
-	Common::askProxyDetails() if($errorKey != 1);
+	# Common::askProxyDetails() if($errorKey != 1); 
+	#Senthil -> Reg:Snigdha_2.32_22_1: We are prompting this if login failed due to proxy. So moving up.
 
 	#validate user account
 	# Common::display(['verifying_your_account_info'],1);
@@ -68,7 +80,7 @@ unless($noServicePath) {
     if(scalar @idriveUsersList>0) {
         $pidsToBeKilled = getAllRunningJobsPids();
     }
-    #@scheduledJobs = checkCronEntries();
+
     $noPermission = 0;
     $errorReason  = '';
     if(!-w $currentDir){
@@ -105,9 +117,7 @@ unless($noServicePath) {
     #Get confirmation to uninstall the package.
     print $lineFeed.Constants->CONST->{'AskUninstallConfig'}->($AppConfig::appType).$whiteSpace;
     $confirmationChoice = getConfirmationChoice();
-    if($confirmationChoice eq "N" || $confirmationChoice eq "n") {
-        exit 0;
-    }
+    exit(1) if(lc($confirmationChoice) eq "n");
 
     if(scalar @idriveUsersList>1) {
         #Get confirmation to uninstall the package when more than one user using this script.
@@ -119,13 +129,14 @@ unless($noServicePath) {
     }
 
     getUsersInfoToUninstall(); #Getting IDrive users info
-    removeCronEntries(); #Removing the cron-entries of scheduled Backup/Restore
-    my $sudomsgtoken = (ifUbuntu() || isGentoo())? Constants->CONST->{'uninstallSudoPWDMSG'}->($AppConfig::appType) : Constants->CONST->{'uninstallRootPWDMSG'}->($AppConfig::appType);
-    my $sudosucmd = getSudoSuCRONPerlCMD('uninstallcron', "\n".$sudomsgtoken);
-    # $sudosucmd = Common::updateLocaleCmd($sudosucmd);
-    if(system($sudosucmd)==0){
+
+	my $sudomsgtoken = Common::hasSudo()? Constants->CONST->{'uninstallSudoPWDMSG'}->($AppConfig::appType) : Constants->CONST->{'uninstallRootPWDMSG'}->($AppConfig::appType);
+    my $sudosucmd = getSudoSuCRONPerlCMD('uninstallcron', "\n" . $sudomsgtoken);
+
+    if(system($sudosucmd) == 0) {
         print $lineFeed.$AppConfig::appType.Constants->CONST->{'cronUninstalled'}.$lineFeed;
-    } else {
+    }
+	else {
         print $lineFeed.Constants->CONST->{'UnableToUninstallCron'}->($AppConfig::appType).$lineFeed;
         exit(0);
     }
@@ -156,11 +167,13 @@ unless($noServicePath) {
     #removeServiceDirectory();
     updateUsersUninstallInfo(); #stat CGI call
 }
+
 # REMOVESCRIPTS: #Added to remove script files if there is no '.serviceLocation' file/service directory
 Common::stopAllCDPServices() if(Common::isCDPWatcherRunning());
 removeScriptFiles();
-removeScriptAndPackageDirectory();
+my $scriptdirrm = removeScriptDirectory();
 removeServiceDirectory(); #Added to remove if any trace file exists - fall back
+removePackageDirectory() if($scriptdirrm);
 
 #*****************************************************************************************************
 # Subroutine			: getSudoSuCRONPerlCMD
@@ -169,21 +182,31 @@ removeServiceDirectory(); #Added to remove if any trace file exists - fall back
 #****************************************************************************************************/
 sub getSudoSuCRONPerlCMD {
 	return '' unless(defined($_[0]));
-	return "perl '$userScriptLocation/" . Constants->FILE_NAMES->{utility} . "' " . uc($_[0]) if ($mcUser eq 'root');
+	return "$AppConfig::perlBin '$userScriptLocation/" . Constants->FILE_NAMES->{utility} . "' " . uc($_[0]) if ($mcUser eq 'root');
 
-	print "$_[1]\n" if (!ifUbuntu() && !isGentoo());
+	my $command = "";
 
-	my $sucurb = Common::hasBSDsuRestrition()? ' -m root ' : '';
-	my $command = "su $sucurb -c \"perl '" . $userScriptLocation . '/' . Constants->FILE_NAMES->{utility} . "' " . uc($_[0]) . "\" root";
-	$command 	= "sudo -p '" . $_[1] . "' " . $command if (ifUbuntu() || isGentoo());
+	if(Common::hasSudo()) {
+		print "$_[1]\n" if (!ifUbuntu() and !isGentoo() and !Common::hasActiveSudo());
+
+		my $sudomsg = (ifUbuntu() or isGentoo())? (" -p '" . $_[1] . "' ") : "";
+		$command = "sudo $sudomsg $AppConfig::perlBin '" . $userScriptLocation . '/' . Constants->FILE_NAMES->{utility} . "' " . uc($_[0]);
+	}
+	else {
+		print("$_[1]\n");
+
+		my $sucurb = Common::hasBSDsuRestrition()? ' -m root ' : '';
+		$command = "su $sucurb -c \"$AppConfig::perlBin '" . $userScriptLocation . '/' . Constants->FILE_NAMES->{utility} . "' " . uc($_[0]) . "\"";
+	}
 
 	return $command;
 }
 
 #****************************************************************************************************
-# Subroutine Name         : killAllJobs.
-# Objective               : Killing all the running process
-# Added By                : Senthil Pandian
+# Subroutine 		: killAllJobs.
+# Objective			: Killing all the running process
+# Added By			: Senthil Pandian
+# Modified By		: Sabin Cheruvattil
 #*****************************************************************************************************/
 sub killAllJobs
 {
@@ -198,16 +221,19 @@ sub killAllJobs
 			$ifubuntu = 1;
 			$rootCommand = "sudo -Sk ".$rootCommand;
 		}
+
 		$scriptTermCmd = $rootCommand;
 	} else {
 		$scriptTermCmd = "kill -9 $pidsToBeKilled 2>/dev/null";
 	}
+
 	print qq(\nEnter root ) if (!$ifubuntu and $isAnyOtherUserProcess eq 1);
 
 	$scriptTermCmd = Common::updateLocaleCmd($scriptTermCmd);
     # Common::display(["\n",'terminating_ongoing_jobs']); #Commented for Snigdha_2.3_19_3: Senthil
 	return @scriptTerm = `$scriptTermCmd`;
 }
+
 #****************************************************************************************************
 # Subroutine Name         : getAllRunningJobsPids.
 # Objective               : getting all running jobs pid
@@ -231,6 +257,7 @@ sub getAllRunningJobsPids
 	Chomp(\$pidsToBeKilled);
 	return $pidsToBeKilled;
 }
+
 #****************************************************************************************************
 # Subroutine Name         : getUsersInfoToUninstall.
 # Objective               : Get the client/IDrive user detail for stat.
@@ -255,6 +282,7 @@ sub getUsersInfoToUninstall
 		}
 	}
 }
+
 #****************************************************************************************************
 # Subroutine Name         : updateUsersUninstallInfo.
 # Objective               : Update the client/IDrive user detail for stat.
@@ -278,21 +306,24 @@ sub removeServiceDirectory
 {
 	my $rmCmd = '';
 	my $res   = 1;
-	if($idriveServicePath and -d $idriveServicePath){
-		if($idriveServicePath ne "/" and $idriveServicePath =~ /\/$appTypeSupport/) {	#<Deepak> Minimum validation to make sure it is our path
-			$rmCmd = "rm -rf '$idriveServicePath' 2>/dev/null";
-			$rmCmd = Common::getSudoSuCMD($rmCmd, $sudoprompt, 0);
-			chdir("../");
-			$res = system($rmCmd);
-		}
 
-		if($rmCmd eq '' or $res) {
-			print $lineFeed . Constants->CONST->{'failedToRemove'}->('directory', $idriveServicePath) . $lineFeed;
-			print "Reason: " . $! . $lineFeed if($!);
-		} else {
-			print $lineFeed . Constants->CONST->{'DirectoryRemoved'}->('Service directory', $idriveServicePath) . $lineFeed;
-		}
+	return 0 if(!$idriveServicePath or !-d $idriveServicePath);
+
+	if($idriveServicePath ne "/" and $idriveServicePath =~ /\/$appTypeSupport/) {	#<Deepak> Minimum validation to make sure it is our path
+		$rmCmd = "rm -rf '$idriveServicePath' 2>/dev/null";
+		$rmCmd = Common::getSudoSuCMD($rmCmd, $sudoprompt);
+		chdir("../");
+		$res = system($rmCmd);
 	}
+
+	if($rmCmd eq '' or $res) {
+		print $lineFeed . Constants->CONST->{'failedToRemove'}->('directory', $idriveServicePath) . $lineFeed;
+		print "Reason: " . $! . $lineFeed if($!);
+		return 0;
+	}
+
+	print $lineFeed . Constants->CONST->{'DirectoryRemoved'}->('Service directory', $idriveServicePath) . $lineFeed;
+	return 1;
 }
 
 #****************************************************************************************************
@@ -319,51 +350,65 @@ sub removeScriptFiles
 }
 
 #****************************************************************************************************
-# Subroutine Name         : removeScriptAndPackageDirectory.
+# Subroutine Name         : removeScriptDirectory
 # Objective               : Removing the Script/Package directory if it is empty
 # Added By                : Senthil Pandian
 # Modified By             : Senthil Pandian, Vijay Vinoth
 #*****************************************************************************************************/
-sub removeScriptAndPackageDirectory
+sub removeScriptDirectory
 {
-	$scriptPathRemoved = 0;
-	my $pwdCmd = Common::updateLocaleCmd('pwd');
-	$pwd = `$pwdCmd`;
+	my $pwdCmd = 'pwd';
+	$pwd = `$pwdCmd 2>/dev/null`;
 	chomp($pwd);
-	if(isDirectoryEmpty($currentDir)) {
-		$rmCmd = "rm -rf '$currentDir' 2>/dev/null";
-		my $previllege    = (Common::isUbuntu() || Common::isGentoo()? 'sudoers' : 'root');
-		my $sudopromptMsg = "\nInsufficient permissions for '$user' to remove script directory. Please provide $previllege password to continue.";
-		$rmCmd = Common::getSudoSuCMD("$rmCmd", $sudopromptMsg);
-		# $rmCmd = Common::updateLocaleCmd($rmCmd);
-		my $res = system($rmCmd);
-		if(!$res){
-			$scriptPathRemoved = 1;
-		}
-        else {
-            #Added for Snigdha_2.3_12_17: Senthil
-            # print $!;
-        	print $lineFeed.Constants->CONST->{'failedToRemove'}->('directory', $currentDir).$lineFeed;
-        }
 
-		my $idx = rindex($currentDir, "/");
-		$packagePath = substr($currentDir, 0, $idx+1);#Getting package path from script path
-		if($scriptPathRemoved and isDirectoryEmpty($packagePath)) {
-			if($pwd =~ /$packagePath/){
-				chdir("$packagePath/../");
-			}
-			$rmCmd = "rm -rf '$packagePath' 2>/dev/null";
-			$sudopromptMsg = "\nInsufficient permissions for '$user' to remove package directory. Please provide $previllege password to continue.";
-			$rmCmd = Common::getSudoSuCMD("$rmCmd", $sudopromptMsg, 1);
-			# $rmCmd = Common::updateLocaleCmd($rmCmd);
-			my $res = system($rmCmd);
-            if($res) {
-                #Added for Snigdha_2.3_12_17: Senthil
-                print $lineFeed.Constants->CONST->{'failedToRemove'}->('directory', $packagePath).$lineFeed;
-            }
-		}
-		print $lineFeed.Constants->CONST->{'scriptRemoved'}->($AppConfig::appType).$lineFeed;
+	return 0 if(!isDirectoryEmpty($currentDir));
+
+	$rmCmd = "rm -rf '$currentDir' 2>/dev/null";
+	my $previllege    = (Common::hasSudo()? 'sudoers' : 'root');
+	my $sudopromptMsg = "\nInsufficient permissions for '$user' to remove script directory. Please provide $previllege password to continue.";
+	$rmCmd = Common::getSudoSuCMD("$rmCmd", $sudopromptMsg);
+
+	chdir("../");
+	my $res = system($rmCmd);
+	return 1 if(!$res);
+
+	print $lineFeed.Constants->CONST->{'failedToRemove'}->('directory', $currentDir).$lineFeed;
+	return 0;
+}
+
+#*****************************************************************************************************
+# Subroutine	: removePackageDirectory
+# In Param		: UNDEF
+# Out Param		: UNDEF
+# Objective		: Remove the scripts installation directory
+# Added By		: Sabin Cheruvattil
+# Modified By	: 
+#*****************************************************************************************************
+sub removePackageDirectory {
+	my $idx = rindex($currentDir, "/");
+	my $packagePath = substr($currentDir, 0, $idx + 1); # Getting package path from script path
+
+	my $pwdCmd = 'pwd';
+	$pwd = `$pwdCmd 2>/dev/null`;
+	chomp($pwd);
+
+	return 0 if(!isDirectoryEmpty($packagePath));
+
+	chdir("$packagePath/../") if($pwd =~ /$packagePath/);
+
+	$rmCmd = "rm -rf '$packagePath' 2>/dev/null";
+	$sudopromptMsg = "\nInsufficient permissions for '$user' to remove package directory. Please provide $previllege password to continue.";
+	$rmCmd = Common::getSudoSuCMD($rmCmd, $sudopromptMsg);
+
+	my $res = system($rmCmd);
+	if($res) {
+		#Added for Snigdha_2.3_12_17: Senthil
+		print $lineFeed.Constants->CONST->{'failedToRemove'}->('directory', $packagePath).$lineFeed;
+		return 0;
 	}
+
+	print $lineFeed.Constants->CONST->{'scriptRemoved'}->($AppConfig::appType).$lineFeed;
+	return 1;
 }
 
 #****************************************************************************************************
@@ -373,25 +418,33 @@ sub removeScriptAndPackageDirectory
 #*****************************************************************************************************/
 sub getRunningJobPid
 {
-	$jobRunningDir = shift;
+	my $jobRunningDir = shift;
 	my $pidPath = $jobRunningDir."pid.txt";
 	my $utfFile = $jobRunningDir."utf8";
 	my $errorKillingJob = $jobRunningDir."errorKillingJob";
 	my $searchUtfFile = undef;
 	unlink($pidPath) if($unlinkPidFile == 1);
 
+	$utfFile =~ s/\[/\\[/; #Added for Suruchi_2.32_21_1: Senthil
+	$utfFile =~ s/{/[{]/;
 	my $evsCmd   = "ps $psOption | grep \"$idevsutilBinaryName\" | grep \'$utfFile\' | grep -v \'grep\'";
 	$evsCmd = Common::updateLocaleCmd($evsCmd);
 	$evsRunning  = `$evsCmd`;
 
-	my $uninstallScript     = $currentDir."/".Constants->FILE_NAMES->{uninstallScript};
-	my $checkForUpdateScript = $currentDir."/".Constants->FILE_NAMES->{checkForUpdateScript};
-	my $evsCmd   = "ps $psOption | grep \"$currentDir\" | grep -v \'grep\' | grep -v \"$uninstallScript\" | grep -v \"$checkForUpdateScript\"";
+	my $tempCurrentDir = $currentDir;
+	$tempCurrentDir =~ s/\[/\\[/;
+	$tempCurrentDir =~ s/{/[{]/;
+	my $uninstallScript      = Common::getCatfile($tempCurrentDir, $AppConfig::idriveScripts{'uninstall_script'});
+	my $checkForUpdateScript = Common::getCatfile($tempCurrentDir, $AppConfig::idriveScripts{'check_for_update'});
+	
+	$evsCmd   = "ps $psOption | grep \"$tempCurrentDir\" | grep -v \'grep\' | grep -v \"$uninstallScript\" | grep -v \"$checkForUpdateScript\"";
 	$evsCmd = Common::updateLocaleCmd($evsCmd);
 	$evsRunning .= `$evsCmd`;
 
 	if($jobRunningDir =~ /Restore/) {
 		$searchUtfFile = $jobRunningDir."searchUtf8.txt";
+		$searchUtfFile =~ s/\[/\\[/;
+		$searchUtfFile =~ s/{/[{]/;
 		$evsCmd = "ps $psOption | grep \"$idevsutilBinaryName\" | grep \'$searchUtfFile\' | grep -v \'grep\'";
 		$evsCmd = Common::updateLocaleCmd($evsCmd);
 		$evsRunning .= `$evsCmd`;
@@ -402,6 +455,7 @@ sub getRunningJobPid
 	my @pids;
 
 	foreach(@evsRunningArr) {
+		next unless($_);
 		if($_ =~ /$evsCmd/) {
 			next;
 		}
@@ -426,38 +480,6 @@ sub getRunningJobPid
 		return "$pidString ";
 	}
 	return '';
-}
-
-#****************************************************************************************************
-# Subroutine Name         : checkCronEntries.
-# Objective               : Check existing jobs in Cron Entries
-# Added By                : Senthil Pandian
-#*****************************************************************************************************/
-sub checkCronEntries {
-	my $readable = readFromCrontab();
-	if($readable == 0){
-		print $lineFeed.Constants->CONST->{'DirectoryFileNotEmpty'}->($user, "crontab","entries").$lineFeed.$lineFeed;
-		exit(0);
-	}
-	my @schJobs = ();
-	return @schJobs = grep /$currentDir/,@linesCrontab;
-}
-#****************************************************************************************************
-# Subroutine Name         : removeCronEntries.
-# Objective               : Remove package related cron entries.
-# Added By                : Senthil Pandian
-#*****************************************************************************************************/
-sub removeCronEntries {
-	if (scalar(@scheduledJobs) > 0 ){
-		removeEntryFromCrontabLines();
-		my $writeFlag = writeToCrontab();
-		if(!$writeFlag) {
-			print $lineFeed.Constants->CONST->{'UnableToRemoveCron'}->$AppConfig::appType.$lineFeed;
-			exit(0);
-		} else {
-			print $lineFeed.Constants->CONST->{'RemovedCronEntries'}.$lineFeed;
-		}
-	}
 }
 
 #****************************************************************************************************
@@ -487,58 +509,6 @@ sub displayKillMessage{
 			close (IP);
 		}
     }
-}
-
-#****************************************************************************************************
-# Subroutine Name		: removeEntryFromCrontabLines.
-# Objective				: Subroutine to remove an existing backup job from crontab corresponding
-#							to the backup script.
-# Modified By			: Dhritikana
-# Modified By 			: Abhishek Verma - 21/6/2017 - Now variable $jobExists will contain only 'user_profile/tester_1/Backup/Scheduled' for backup job and
-# 				  'user_profile/tester_1/Backup/Scheduled' for Restore job, to remove job from crontab file.
-# 				  This has been done so that jobs can be deleted irrespective of the location from where job has been scheduled by the user.
-#*****************************************************************************************************/
-sub removeEntryFromCrontabLines
-{
-	my $jobExists = qq{$currentDir};
-	@linesCrontab = grep !/$jobExists/, @linesCrontab;
-}
-
-#****************************************************************************************************
-# Subroutine Name		: writeToCrontab.
-# Objective				: Append an entry to crontab file.
-# Modified By			: Dhritikana
-#*****************************************************************************************************/
-sub writeToCrontab {
-	my $command = '';
-	s/^\s+// for @linesCrontab;
-	my $temp = "$usrProfilePath/operationsfile.txt";
-	if(!open TEMP, ">", $temp) {
-		print $tHandle "$!\n";
-		print "unable $!";
-	}
-	print TEMP "WRITE_TO_CRON\n";
-	print TEMP @linesCrontab;
-	close TEMP;
-	chmod $filePermission, $temp;
-	my $operationsScript = qq($userScriptLocation/).Constants->FILE_NAMES->{operationsScript};
-	if($isAnyOtherUserProcess) {
-		$command = "su -c \"perl '$operationsScript' '$usrProfilePath' \" root";
-		if (ifUbuntu()){
-			$command = "sudo -p\"".Constants->CONST->{'CronQueryUbuntu'}." $user: \" ".$command;
-		}else{
-			print Constants->CONST->{'CronQuery'};
-		}
-	} else {
-		$command = qq{perl '$operationsScript'  '$execString' '$usrProfilePath'};
-	}
-
-	# $command = Common::updateLocaleCmd($command);
-	my $res = system($command);
-	if($res ne "0") {
-		return 0;
-	}
-	return 1;
 }
 
 #****************************************************************************************************

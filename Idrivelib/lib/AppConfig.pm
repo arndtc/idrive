@@ -17,10 +17,10 @@ our @EXPORT_OK = qw(TRUE FALSE STATUS SUCCESS FAILURE);
 
 use IxHash;
 
-our $version          = '2.31';
+our $version          = '2.34';
 my $buildVersion      = '';
 $version             .= "$buildVersion" if ($buildVersion ne '');
-our $releasedate      = '10-18-2021';
+our $releasedate      = '12-26-2022';
 our $appType          = 'IDrive';
 our $servicePathName    = lc($appType).'It';
 our $oldServicePathName = lc($appType);
@@ -30,10 +30,12 @@ our $language = 'EN';       # EN-ENGLISH
 our $staticPerlVersion    = '2.31';
 our $staticPerlBinaryName = 'perl';
 
-our $pythonVersion        = '2.31';
+our $pythonVersion        = '2.33';
 our $pythonBinaryName     = 'dashboard';
 
 our $appCron = lc($appType).'cron';
+
+our $dbversion = '2.0';
 
 use constant {
 	SUCCESS  => 'SUCCESS',
@@ -117,6 +119,7 @@ our $evsVersion      = 'evs005';
 our $NSPort          = 443;
 
 our $deviceUIDPrefix = 'Linux';
+our $deviceUIDsuffix = '';
 our $deviceIDPrefix  = '5c0b';
 our $deviceIDSuffix  = '4b5z';
 
@@ -140,6 +143,7 @@ our $idpwdFile             = "$userInfoPath/IDPWD";
 our $idenpwdFile           = "$userInfoPath/IDENPWD";
 our $idpwdschFile          = "$userInfoPath/IDPWD_SCH";
 our $idpvtFile             = "$userInfoPath/IDPVT";
+our $idenpvtFile           = "$userInfoPath/IDENPVT";
 our $idpvtschFile          = "$userInfoPath/IDPVT_SCH";
 our $serverAddressFile     = "$userInfoPath/serverAddress.txt";
 our $validateRestoreFromFile = "validateRestoreFromFile.txt";
@@ -159,19 +163,21 @@ our $maxChoiceRetry        = 3;
 our $reportMaxMsgLength    = 4095;
 our $bufferLimit           = 10 * 1024;
 our $quotatimeout          = 36000;
+our $maxFileVersion        = 30;
 
 our $minEngineCount     = 2;
 our $maxEngineCount     = 4;
 our $restoreEngineCount	= 4;
 
-our $fullExcludeListFile    = 'FullExcludeList.txt';
-our $partialExcludeListFile = 'PartialExcludeList.txt';
-our $regexExcludeListFile   = 'RegexExcludeList.txt';
+our $fullExcludeListFile	= 'FullExcludeList.txt';
+our $partialExcludeListFile	= 'PartialExcludeList.txt';
+our $regexExcludeListFile	= 'RegexExcludeList.txt';
+our $otherExcludetFile		= 'otherExclude.json';
 
 our $searchDir          = 'Search';
 our $evsOutputFile      = 'evsOutput.txt';
 our $evsErrorFile       = 'evsError.txt';
-our $versionRestoreFile = 'versionRestoresetFile.txt';
+our $versionRestoreFile = 'versionRestoresetFile.json';
 
 our $unzipLog     = 'unzipLog.txt';
 our $updateLog    = '.updateLog.txt';
@@ -252,7 +258,8 @@ our $expressDbDir = 'ExpressDB';
 our ($jobRunningDir,$outputFilePath,$errorFilePath,$mailContentHead) = ('') x 4;
 our ($mailContent, $jobType, $expressLocalDir, $errStr, $finalSummary) = ('') x 5;
 our ($fullStr,$parStr,$regexStr) = ('') x 3;
-our ($noRelIndex, $filesonlycount, $retryCount, $cancelFlag) = (0) x 4;
+our $regexcl = '';
+our ($noRelIndex, $filesonlycount, $retryCount, $cancelFlag, $versionToRestore) = (0) x 5;
 # our ($excludedCount,$noRelIndex,$excludedFileIndex,$filesonlycount,$retryCount,$cancelFlag) = (0) x 6;
 our ($totalFiles, $totalSize, $fileCount, $nonExistsCount, $noPermissionCount, $missingCount, $readySyncedFiles, $excludedCount) = (0) x 8;
 our ($localMountPath,$encType,$pvtKeyHash) = ('') x 3;
@@ -270,6 +277,8 @@ our $prevTime = time();
 
 our $inputMandetory = 1;
 
+our $totalFileKey = 'totalFiles';
+our $startTimeKey = 'actStartTime';
 our $accessTokenFile = 'accesstoken.txt';
 our $notificationFile = 'notification.json';
 our $nsFile = 'ns.json';
@@ -311,7 +320,8 @@ our $cdp			= 'cdp';
 our	$cdpfn			= 'Continuous Data Protection';
 our $cdpwatcher		= 'cdpwatcher';
 our $cdprescan		= 'cdpDBScan';
-our $dbname			= 'cdp.ibenc';
+our $dbnamebase		= 'cdp.ibenc';
+our $dbname			= $dbnamebase . '_' . $dbversion;
 our $rescanlog		= 'rescan.log';
 our $cdpcpdircache	= 'cpentries.txt';
 our $dbFileIndex	= 0;
@@ -324,6 +334,7 @@ our $fsindexmax		= 5000;
 our $cdpscandet		= 5000;
 our $cdpdumptimeout	= 5;
 our $cdpdumpmaxrec	= 10000;
+our $cdploadchkct	= 20;
 our $repooppath		= '/tmp/pk-inst-op.log';
 our $repoerrpath	= '/tmp/pk-inst-err.log';
 our $instprog		= '/tmp/instprog.log';
@@ -336,6 +347,7 @@ our $defrescanday	= '01';
 our $defrescanhr	= '12';
 our $defrescanmin	= '00';
 
+our $silentflag = '--silent';
 our $running = 'running';
 our $paused  = 'paused';
 our $more    = 'more';
@@ -347,6 +359,17 @@ our $bkpscan = 'bkpscan';
 our $rescan  = 'rescan';
 our $scan    = 'scan';
 our $localbackup = 'localbackup';
+our $processPattern = 'CDP|DBW';
+our $lastBkpStatusFile = 'lastBackupStatus.txt';
+our $localrestoreListPid = 'localrestorelistpid.txt';
+our $splitCount          = 1000;
+our $localFolderList     = '_folderlist';
+
+our $nslockfh;
+our $cronlockfh;
+our $nslockfile = "notification.lock";
+our $cronlockfile = "cron.lock";
+our $crontabmts = 0;
 
 our %jobTitle = ('backup' => 'backup_job', 'restore' => 'restore_job', 'archive' => 'archive_job', 'localbackup' => 'localbackup_job', 'cdp' => 'cdp_job', 'bkpscan' => 'bkpscan_job', 'rescan' => 'rescan_job', 'localrestore' => 'localrestore_job');
 
@@ -455,14 +478,15 @@ our %evsZipFiles = (
 	'IDrive' => {
 		'32' => ['__APPTYPE___linux_32bit.zip', '__APPTYPE___QNAP_32bit.zip'],
 		'64' => ['__APPTYPE___linux_64bit.zip', '__APPTYPE___QNAP_64bit.zip', '__APPTYPE___synology_64bit.zip', '__APPTYPE___Vault_64bit.zip', '__APPTYPE___linux_32bit.zip', '__APPTYPE___QNAP_32bit.zip'],
+		'arm' => ['__APPTYPE___QNAP_ARM.zip', '__APPTYPE___synology_ARM.zip', '__APPTYPE___Netgear_ARM.zip', '__APPTYPE___synology_Alpine.zip', '__APPTYPE___synology_aarch64bit.zip'],
+		'aarch64' => ['__APPTYPE___synology_aarch64bit.zip', '__APPTYPE___QNAP_ARM.zip', '__APPTYPE___synology_ARM.zip', '__APPTYPE___Netgear_ARM.zip', '__APPTYPE___synology_Alpine.zip'],
 		'freebsd' => ['__APPTYPE___Vault_64bit.zip'],
-		'arm' => ['__APPTYPE___QNAP_ARM.zip', '__APPTYPE___synology_ARM.zip', '__APPTYPE___synology_aarch64bit.zip', '__APPTYPE___Netgear_ARM.zip', '__APPTYPE___synology_Alpine.zip'],
 	},
 	'IBackup' => {
 		'32' => ['__APPTYPE___linux_32bit.zip', '__APPTYPE___QNAP_32bit.zip', '__APPTYPE___synology_64bit.zip', '__APPTYPE___Netgear_64bit.zip', '__APPTYPE___Vault_64bit.zip'],
 		'64' => ['__APPTYPE___linux_64bit.zip', '__APPTYPE___QNAP_64bit.zip', '__APPTYPE___synology_64bit.zip', '__APPTYPE___Netgear_64bit.zip', '__APPTYPE___Vault_64bit.zip', '__APPTYPE___linux_32bit.zip', '__APPTYPE___QNAP_32bit.zip'],
-		'freebsd' => ['__APPTYPE___Vault_64bit.zip'],
 		'arm' => ['__APPTYPE___QNAP_ARM.zip', '__APPTYPE___synology_ARM.zip', '__APPTYPE___Netgear_ARM.zip', '__APPTYPE___synology_Alpine.zip'],
+		'freebsd' => ['__APPTYPE___Vault_64bit.zip'],
 	},
 );
 
@@ -476,6 +500,7 @@ our %pythonZipFiles = (
 	'32'      => ("idrive_dependency/$pythonVersion/__KVER__/x86/python.zip"),
 	'64'      => ("idrive_dependency/$pythonVersion/__KVER__/x86_64/python.zip"),
 	'arm'     => ("idrive_dependency/$pythonVersion/__KVER__/arm/python.zip"),
+	'aarch64' => ("idrive_dependency/$pythonVersion/__KVER__/aarch64/python.zip"),
 	'freebsd' => ("idrive_dependency/$pythonVersion/freebsd/python.zip"),
 );
 
@@ -566,6 +591,14 @@ tie (our %excludeFilesSchema, 'Tie::IxHash',
 	},
 );
 
+our $proxyTemplate = {
+	'PROXYIP'   => '',
+	'PROXYPORT' => '',
+	'PROXYUSERNAME' => '',
+	'PROXYPASSWORD' => '',
+	'PROXY' => '',
+};
+
 our %evsAPIPatterns = (
 	'GETQUOTA'         => "--get-quota\n__getUsername__\@__getServerAddress__::home/",
 	'STRINGENCODE'     => "--string-encode=__ARG1__\n--out-file=__ARG2__",
@@ -576,19 +609,20 @@ our %evsAPIPatterns = (
 	'LISTDEVICE'       => "--xml-output\n--list-device\n--all\n__getUsername__\@__getServerAddress__::home/",
 	'NICKUPDATE'       => "--xml-output\n--nick-update\n--nick-name=__ARG1__\n--os=Linux\n--device-id=__ARG2__\n--location=__getMachineUser__\n__getUsername__\@__getServerAddress__::home/",
 	'LINKBUCKET'       => "--xml-output\n--link-bucket\n--nick-name=__ARG1__\n--os=Linux\n__getUsername__\@__getServerAddress__::home/\n--device-id=$deviceIDPrefix\__ARG2__$deviceIDSuffix\n--uid=__ARG3__\n--bucket-type=D\n--location=__getMachineUser__",
-	'DEFAULTCONFIG'    => "--config-account\n--user=__getUsername__\n--enc-type=DEFAULT",
-	'PRIVATECONFIG'    => "--config-account\n--user=__getUsername__\n--enc-type=PRIVATE",
+	'DEFAULTCONFIG'    => "--config-account\n--enc-type=DEFAULT\n--wb-sr=__ARG1__\n__getUsername__\@__getServerAddress__::home/",
+	'PRIVATECONFIG'    => "--config-account\n--enc-type=PRIVATE\n--wb-sr=__ARG1__\n__getUsername__\@__getServerAddress__::home/",
 	'PING'             => "__getUsername__\@__getServerAddress__::home/",
 	'FILEVERSION'      => "--version-info\n--xml-output\n__getUsername__\@__getServerAddress__::home/__ARG1__",
 	'SEARCH'           => "--search\n--o=__ARG1__\n--e=__ARG2__\n--xml-output\n--file\n__getUsername__\@__getServerAddress__::home/__ARG3__",
 	'SEARCHALL'        => "--search\n--all\n--o=__ARG1__\n--e=__ARG2__\n--xml-output\n--file\n__getUsername__\@__getServerAddress__::home/__ARG3__",
 	'SEARCHARCHIVE'    => "--search\n--o=__ARG1__\n--e=__ARG2__\n--xml-output\n__getUsername__\@__getServerAddress__::home/__ARG3__",
+	'PATTERNSEARCH'    => "--search\n--o=__ARG1__\n--e=__ARG2__\n--search-key=__ARG3__\n--xml-output\n__getUsername__\@__getServerAddress__::home/__ARG4__",
 	'ITEMSTATUS3'      => "--items-status3\n--files-from=__ARG1__\n--e=__ARG2__\n--xml-output\n--file\n__getUsername__\@__getServerAddress__::home/__ARG3__",
 	'ITEMSTATUS'       => "--items-status\n--files-from=__ARG1__\n--e=__ARG2__\n--xml-output\n--file\n__getUsername__\@__getServerAddress__::home/__ARG3__",
 	'PROPERTIES'       => "--properties\n--e=__ARG1__\n--xml-output\n__getUsername__\@__getServerAddress__::home/__ARG2__",
 	'DELETE'           => "--delete-items\n--files-from=__ARG1__\n--o=__ARG2__\n--e=__ARG3__\n--xml-output\n__getUsername__\@__getServerAddress__::home/",
 	'AUTHLIST'         => "--auth-list\n--o=__ARG1__\n--e=__ARG2__\n--xml-output\n__getUsername__\@__getServerAddress__::home/__ARG3__",
-	'EXPRESSBACKUP'    => "--files-from=__ARG1__\n--bw-file=__ARG2__\n--type\n--def-local=__ARG3__\n--add-progress\n--temp=__ARG4__\n--xml-output\n--enc-opt\n__ARG5__\n--portable\n--no-versions\n--o=__ARG6__\n--e=__ARG7__\n--portable-dest=__ARG8__\n__ARG9__\n__getUsername__\@__getServerAddress__::home/__ARG10__",
+	'LOCALBACKUP'      => "--files-from=__ARG1__\n--bw-file=__ARG2__\n--type\n--def-local=__ARG3__\n--add-progress\n--temp=__ARG4__\n--xml-output\n--enc-opt\n__ARG5__\n--portable\n--no-versions\n--o=__ARG6__\n--e=__ARG7__\n--portable-dest=__ARG8__\n__ARG9__\n__getUsername__\@__getServerAddress__::home/__ARG10__",
 	'BACKUP'           => "--files-from=__ARG1__\n--bw-file=__ARG2__\n--type\n--add-progress\n--100percent-progress\n--temp=__ARG3__\n--xml-output\n--o=__ARG4__\n--e=__ARG5__\n__ARG6__\n__getUsername__\@__getServerAddress__::home/__ARG7__",
 	# 'LOGBACKUP'        => "--files-from=__ARG1__\n--xml-output\n--backup-log\n--no-relative\n--temp=__ARG2__\n--o=__ARG3__\n--e=__ARG4__\n/\n__getUsername__\@__getServerAddress__::home/--ILD--/$hostname/log/",
 	'LOGBACKUP'        => "--files-from=__ARG1__\n--xml-output\n--backup-log\n--no-relative\n--temp=__ARG2__\n--o=__ARG3__\n--e=__ARG4__\n/\n__getUsername__\@__getServerAddress__::home/--ILD--/$hostname/__ARG5__",
@@ -596,6 +630,9 @@ our %evsAPIPatterns = (
 	'CHANGENOINDEX'		=> "--xml-output\n--port=443\n--type\n--search\n--timeout=60\n--file-index64=__ARG1__\n--o=__ARG2__\n__getUsername__\@__getServerAddress__::home/",
 	'LOCALRESTORE'	   => "--files-from=__ARG1__\n--add-progress\n--enc-opt\n--def-local=__ARG2__\n--temp=__ARG3__\n--xml-output\n--mask-name\n--o=__ARG4__\n--e=__ARG5__\n--portable\n--portable-dest=__ARG6__\n__getUsername__\@__getServerAddress__::home/__ARG6__\n__ARG7__\n",
 	'DBREINDEX'		   => "--expressdb-recreate\n--xml-output\n--user=__getUsername__\n--o=__ARG1__\n--e=__ARG2__\n--portable-dest=__ARG3__\n",
+	'SNAPSHOTLISTING'  => "--xml-output\n--snap-shot2\n--snapshot-sdate=__ARG1__\n--snapshot-edate=__ARG2__\n--o=__ARG3__\n--e=__ARG4__\n__getUsername__\@__getServerAddress__::home/__ARG5__\n",
+	'SNAPSHOTSEARCH'  => "--xml-output\n--snap-shot2\n--snapshot-sdate=__ARG1__\n--snapshot-edate=__ARG2__\n--o=__ARG3__\n--e=__ARG4__\n__getUsername__\@__getServerAddress__::home/__ARG5__\n--all\n",
+	'SNAPSHOTFOLDERSIZE'  => "--snap-shot2\n--xml-output\n--snapshot-sdate=__ARG1__\n--snapshot-edate=__ARG2__\n--o=__ARG3__\n--e=__ARG4__\n__getUsername__\@__getServerAddress__::home/__ARG5__\n--folder-size\n",
 );
 
 tie(our %userConfigurationSchema, 'Tie::IxHash',
@@ -1028,11 +1065,35 @@ tie(our %userConfigurationSchema, 'Tie::IxHash',
 		type     => 'regex',
 		for_dashboard => 0,
 	},
-    EXCLUDESETUPDATED=> {
+    EXCLUDESETUPDATED => {
 		cgi_name => '',
 		evs_name => '',
 		required => 0,
 		default  => 0,
+		type     => 'regex',
+		for_dashboard => 0,
+	},
+	TRD => {
+		cgi_name => '',
+		evs_name => '',
+		required => 0,
+		default  => 0,
+		type     => 'regex',
+		for_dashboard => 0,
+	},
+	EVSSRVR => {
+		cgi_name => 'evssrvr',
+		evs_name => 'cmdUtilityServer',
+		required => 0,
+		default  => 0,
+		type     => 'regex',
+		for_dashboard => 0,
+	},
+	EVSSRVRACCESS => {
+		cgi_name => '',
+		evs_name => '',
+		required => 0,
+		default  => 1,
 		type     => 'regex',
 		for_dashboard => 0,
 	},
@@ -1068,6 +1129,7 @@ our %notificationsSchema = (
 	'update_backup_progress'      => '',
 	'update_localbackup_progress' => '',
 	'update_restore_progress'     => '',
+	'update_localrestore_progress'=> '',
 	'get_user_settings'           => 'default_sync',
 	'get_logs'                    => 'default_sync',
 	'get_settings'                => 'default_sync',
@@ -1077,6 +1139,7 @@ our %notificationsSchema = (
 	'update_acc_status'           => '',
 	'alert_status_update'         => '',
 	'update_device_info'          => '',
+	'update_next_backup_time'     => '',
 );
 
 @notificationsSchema{map{"get_$_".'set_content'} keys %availableJobsSchema} = map{"default_sync"} values %availableJobsSchema;
@@ -1102,6 +1165,7 @@ our %alertErrCodes = (
 	'uname_pwd_mismatch'      => 113,
 	'pvt_verification_failed' => 114,
 	'scheduled_cut_off'       => 115,
+	'start_missed_backup'     => 202,
 	'no_scheduled_jobs'       => 203,
 );
 
@@ -1147,6 +1211,17 @@ tie(our %supportedOSList, 'Tie::IxHash',
     8 => 'Manjarolinux',
     9 => 'Opensuse',
     10 => 'Ubuntu',
+);
+
+our %dbFields = (
+	#Name field is mandatory and it was added in SQL query. So need not to add explicitly.
+	# 'TYPE'      => 'TYPE',
+	'DIR_LMD'        => 'ibfolder.FILE_LMD as LMD',
+	'DIR_TOTALSIZE'  => 'TOTAL(ibfile.FILE_SIZE) AS TOTALSIZE',
+	'DIR_FILESCOUNT' => 'COUNT(*) AS FILESCOUNT',
+	'SIZE'       	 => 'ibfile.FILE_SIZE as SIZE',
+	'LMD'        	 => 'ibfile.FILE_LMD as LMD',
+	'FILEBKPSTATUS'  => 'ibfile.BACKUP_STATUS as FILEBKPSTATUS',
 );
 
 # @TODO: need to analyze older version of the OS's and have to add configurations
@@ -1517,6 +1592,10 @@ our %cronLaunchCodes = (
 	},
 );
 
+$cronLaunchCodes{'ol'} = $cronLaunchCodes{'centos'};
+$cronLaunchCodes{'pop'} = $cronLaunchCodes{'ubuntu'};
+$cronLaunchCodes{'rocky'} = $cronLaunchCodes{'centos'};
+
 our %pmDNFPacksFed34 = ('File::Copy' => 'perl-File-Copy', 'Sys::Hostname' => 'perl-Sys-Hostname', 'Tie::File' => 'perl-Tie-File');
 
 our %depInstallUtils = (
@@ -1791,6 +1870,10 @@ our %depInstallUtils = (
 		'rollback' => [],
 	},
 );
+
+$depInstallUtils{'ol'} = $depInstallUtils{'centos'};
+$depInstallUtils{'pop'} = $depInstallUtils{'ubuntu'};
+$depInstallUtils{'rocky'} = $depInstallUtils{'centos'};
 
 our $cmdInotifySrcComp = [
 	"perl Makefile.PL",
@@ -2216,6 +2299,10 @@ our %inotifyCompiled = (
 	},
 );
 
+$inotifyCompiled{'ol'} = $inotifyCompiled{'centos'};
+$inotifyCompiled{'pop'} = $inotifyCompiled{'ubuntu'};
+$inotifyCompiled{'rocky'} = $inotifyCompiled{'centos'};
+
 our %idriveScripts = (
 	'account_settings'				=> 'account_setting.pl',
 	'archive_cleanup'				=> 'archive_cleanup.pl',
@@ -2436,11 +2523,11 @@ our %evsVersionSchema = (
 	'IDrive' => {
 		'idevsutil' => {
 				'version' => '1.0.2.8',
-				'release_date' => '03-JAN-2020',
+				'release_date' => '28/JUN/2022',
 				},
 		'idevsutil_dedup' => {
 				'version' => '2.0.0.1',
-				'release_date' => '20-FEB-2020',
+				'release_date' => '28/JUN/2022',
 				},
 	},
 	'IBackup' => {

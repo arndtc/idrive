@@ -8,7 +8,7 @@ during transfer and storage, using 256-bit AES encryption with an optional priva
 
 II. SYSTEM/SOFTWARE REQUIREMENTS
 =================================
-Linux(CentOS/Ubuntu/Fedora/OpenSUSE/FreeBSD/Linux Mint) - 32-bit/64-bit
+Linux(CentOS/Ubuntu/Fedora/OpenSUSE/FreeBSD/Linux Mint/Raspberry Pi) - 32-bit/64-bit
 Perl v5.8 or later
 
 III. SCRIPT DOWNLOAD
@@ -775,3 +775,35 @@ IX. RELEASES
 	==============================================================================================================
 		1. Fixed displaying CDP logs in dashboard view logs.
 		2. Fixed enabling/disabling CDP from dashboard.
+
+	Build 2.32
+	==============================================================================================================
+		1. Added 2FA feature.
+		2. Added Snapshot feature on dashboard.
+		3. Fixed domain resolution issue in freeBSD.
+		4. Added improvements in quota calculation.
+		5. Fixed the backup issue of ascendant character files when it deleted from server.
+		6. Fixed the backup hang issue when server address changed.
+		7. Added improvements in local restore.
+		8. Added fixes for dual boot Operating Systems.
+		9. Added improvements in CRON installation for Fedora machines.
+		10. Fixed the progress bar related issues in version restore and local restore.
+		11. Fixed dashboard start issues in Fedora machines during machine reboot.
+		12. Added improvements in scheduled job emails.
+		13. Fixed the partial log issue when backup job cancelled by user.
+		14. Fixed the progress percentage issue when huge sized file retries to backup due to failure.
+		15. Fixed cron restart issues.
+		16. Added aarch64 support.
+		17. Added improvements to avoid user configuration corruption.
+		18. Added improvements in scheduled job launching.
+		19. Fixed the local backup status issue and log header when backupset is empty.
+		20. Fixed error message display issue in speed analysis.
+
+	Build 2.33
+	==============================================================================================================
+		1. Added support for aarch64 architecture.
+		2. Added improvements in speed analysis script.
+
+	Build 2.34
+	==============================================================================================================
+		1. Fixed the issue of duplicate machine entry creation in dashboard.

@@ -10,7 +10,7 @@
 use strict;
 use warnings;
 
-use POSIX qw(mktime strftime);
+use POSIX qw(mktime strftime :sys_wait_h);
 use Fcntl qw(:flock SEEK_END);
 use File::stat;
 use File::Basename;
@@ -93,17 +93,46 @@ sub init {
 	my @prevtime;
 	my @curtime;
 
-	# launch dashboard from here | only once we have to start when the cron launches
+	my $srvpid = 0;
 	if ($AppConfig::appType eq 'IDrive') {
 		my $dashcrontab = Common::getCrontab();
-		launchDashboardJobs($dashcrontab);
 		launchCDPJobs($dashcrontab);
+		launchDashboardJobs($dashcrontab);
+		sleep(3);
+		
+		if(!Common::isDashboardRunning()) {
+			$srvpid = fork();
+			if($srvpid == 0) {
+				my $inc = 6;
+				while($inc) {
+					launchDashboardJobs($dashcrontab);
+					sleep(5);
+
+					exit(0) if(Common::isDashboardRunning());
+
+					$inc--;
+					sleep(5);
+				}
+
+				exit(0);
+			}
+
+			waitpid($srvpid, WNOHANG);
+		}
+		
 	}
 
 	my $prevtimesec = time();
 	chomp($prevtimesec);
 
 	while(1) {
+		if($srvpid) {
+			my $fres = waitpid($srvpid, WNOHANG);
+			if($fres == -1 or $fres > 0) {
+				$srvpid = 0;
+			}
+		}
+
 		# exit if lock file is absent
 		exit(0) unless(-f $AppConfig::cronlockFile);
 
@@ -159,8 +188,13 @@ sub init {
 		my ($locmin, $lochour, $locdom, $locmon, $locdow, $locyear) = (localtime)[1, 2, 3, 4, 6, 5];
 		if($locmin == 1 && $lochour == 1 && $AppConfig::appType eq 'IDrive') {
 			my $dashcrontab = Common::getCrontab();
-			launchDashboardJobs($dashcrontab);
+			# launchDashboardJobs($dashcrontab);
 			launchCDPJobs($dashcrontab);
+		}
+
+		if(($locmin % 10) == 0) {
+			my $dashcrontab = Common::getCrontab();
+			launchDashboardJobs($dashcrontab);
 		}
 
 		# if modified time stamp is greater than the previous time stamp, then load cron tab again
@@ -177,6 +211,9 @@ sub init {
 			($index, $launchTime) = $cronEntries->[0]->Shift;
 			execute($launchTime, $cronEntries->[1]->{$index});
 		}
+
+		$crontab = undef;
+		$cronEntries = undef;
 
 		# in case the execute method takes time we need to avoid un necessary cron restart
 		$prevtimesec = time();
@@ -202,7 +239,7 @@ sub init {
 			exit(0) if ($$ != $lockinfo[0]);
 
 			bootloadCronRestart() if (defined($lockinfo[2]) && $lockinfo[2] eq 'restart');
-			sleep($timeIndex);
+			sleep($timeIndex + 2); # Sleep 2 more seconds to fix the skew
 		}
 	}
 }
@@ -372,7 +409,16 @@ sub execute {
 	my $cronmcuser 		= $_[1]->{'mcUser'};
 	my $escapeCMD 		= $_[1]->{'cmd'};
 	my $userModUtilCMD	= Common::getUserModUtilCMD();
-	if($userModUtilCMD ne '') {
+	
+	if($_[1]->{'jobType'} eq "dashboardfallback") {
+		my $dashcmd = $escapeCMD;
+		if($userModUtilCMD ne '') {
+			$dashcmd	=~ s/'/'\\''/g;
+			$dashcmd 	= "$userModUtilCMD $cronmcuser -c '" . Common::getIDrivePerlBin() . " \"$dashcmd\" &'";
+			system($dashcmd);
+		}
+	}
+	elsif($userModUtilCMD ne '') {
 		# $AppConfig::perlBin = 'perl' unless($AppConfig::perlBin);
 		# Added to resolve the FreeBSD issue
 		# Got error "su: perl: command not found"

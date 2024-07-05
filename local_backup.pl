@@ -9,7 +9,7 @@ system('clear');
 use strict;
 use POSIX qw/mktime/;
 use POSIX ":sys_wait_h";
-#use warnings;
+use warnings;
 
 use lib map{if(__FILE__ =~ /\//) { substr(__FILE__, 0, rindex(__FILE__, '/'))."/$_";} else { "./$_"; }} qw(Idrivelib/lib);
 
@@ -112,8 +112,7 @@ sub init {
 	if($dedup eq 'off') {
 		my @backupTo = split("/",$backupTo);
 		$backupTo	 = (substr($backupTo,0,1) eq '/')? '/'.$backupTo[1]:'/'.$backupTo[0];
-	}
-	if ($dedup eq 'on' and !$serverRoot) {
+	} elsif (!$serverRoot) {
 		(my $deviceID, $backupTo)  = split("#",$backupTo);
 		Common::display(["\n",'verifying_your_account_info',"\n"]);
 		my %evsDeviceHashOutput = Common::getDeviceHash();
@@ -156,7 +155,7 @@ sub init {
 	Common::copyBWFile('localbackup');
 
 	$backupsetFile = Common::getCatfile($jobRunningDir, $AppConfig::backupsetFile);
-	$isBackupSetEmpty = Common::checkPreReq($backupsetFile, 'localbackup', $jobType, 'NOBACKUPDATA');
+	$isBackupSetEmpty = Common::checkPreReq($backupsetFile, 'localbackup', 'NOBACKUPDATA');
 
 	my $dbpath	= Common::getJobsPath('localbackup', 'path');
 	my $dbfile	= Common::getCatfile($dbpath, $AppConfig::dbname);
@@ -165,12 +164,13 @@ sub init {
 	my ($dbmpc, $dbhash);
 	my ($readysync, $expstatreset) = (0, 0);
 	my $keyverified = 1;
+	$mountedPath = Common::getUserConfiguration('LOCALMOUNTPOINT');
 	unless($isBackupSetEmpty) {
 		# Get ready sync files
 		$readysync	= Common::getReadySyncItemCount($dbpath);
 		if (Common::getUserConfiguration('DEDUP') eq 'on') {
 			my @verdevices = Common::fetchAllDevices();
-			if ($verdevices[0]{'MSG'} =~ 'No devices found') {
+			if (exists($verdevices[0]{'MSG'}) and $verdevices[0]{'MSG'} =~ 'No devices found') {
 				Common::createBackupStatRenewalByJob('backup');
 
 				if($isScheduledJob == 0 and $silentBackupFlag == 0) {
@@ -201,7 +201,15 @@ sub init {
 				} else {
 					$keyverified = 0;
 				}
-			} else {
+			}
+			elsif($AppConfig::errStr =~ /Failed to authenticate/i) {
+				if($isScheduledJob == 0 and $silentBackupFlag == 0) {
+					Common::retreat(["\n", $AppConfig::errStr]);
+				} else {
+					$AppConfig::errStr = '2-' . $AppConfig::errStr;
+				}
+			}
+			else {
 				$keyverified = 0;
 			}
 		}
@@ -257,6 +265,13 @@ sub init {
 		}
 	}
 
+	#Added to handle for schema changed for 360
+	my($schemaStat, $dbPath) = Common::isExpressDBschemaChanged('localbackup');
+	if($schemaStat) {
+		Common::traceLog('ExpressDBschemaChanged. Renaming DB '.$dbPath);
+		system("mv '$dbPath' '$dbPath'"."_bak") if(-f $dbPath);
+	};
+
 	# Commented as per Deepak's instruction: Senthil
 	# my $serverAddress = Common::getServerAddress();
 	# if ($serverAddress == 0){
@@ -280,11 +295,16 @@ sub init {
 	Common::createDir($errorDir, 0);
 	Common::createLogFiles("BACKUP",ucfirst($jobType));
 	Common::createBackupTypeFile() or Common::retreat('failed_to_set_backup_type');
+
+	# After log header creation check error if present
+	# Added to handle when account related error comes during account_info verification
+	exitCleanup($AppConfig::errStr) if($isScheduledJob == 0 and $AppConfig::errStr =~ /^2\-/i);
+
 	unless ($silentBackupFlag) {
 		if ($dedup eq 'off') {
 			my $bl = Common::getUserConfiguration('BACKUPLOCATION');
 			Common::display(["\n",'your_current_backup_location_is',"'$bl'."]);
-			Common::display(['considered_backup_location_for_express',"'$backupTo'",".\n"]);
+			Common::display(['considered_backup_location_for_local',"'$backupTo'",".\n"]);
 		} elsif($dedup eq 'on') {
 			$backupTo = (split("#",$backupTo))[1];
 			Common::display(["\n",'your_backup_location_is',"'$backupTo'",".\n"]);
@@ -292,21 +312,26 @@ sub init {
 		Common::getCursorPos(15,Common::getStringConstant('preparing_file_list')) if(-e $pidPath);
 	}
 
-	$AppConfig::mailContentHead = Common::writeLogHeader($jobType);
-	if (Common::loadNotifications()) {
-		Common::setNotification('update_localbackup_progress', ((split("/", $AppConfig::outputFilePath))[-1]));
-		Common::saveNotifications();
-	}
-
     #Verify DB & dbpath.xml file
 	# exitCleanup(Common::getStringConstant('unable_to_find_mount_point')) unless($mountedPath);
-	$mountedPath = '' unless($mountedPath);
+	$mountedPath = $AppConfig::defaultMountPath unless($mountedPath);
 	$expressLocalDir = Common::getCatfile($mountedPath, ($AppConfig::appType . 'Local'));
 	$localUserPath   = Common::getCatfile($expressLocalDir, $username);
 	$AppConfig::expressLocalDir = $expressLocalDir;
+	$AppConfig::mailContentHead = Common::writeLogHeader($jobType);
+	if (Common::loadNotifications() and Common::lockCriticalUpdate("notification")) {
+		Common::setNotification('update_localbackup_progress', ((split("/", $AppConfig::outputFilePath))[-1]));
+		Common::saveNotifications();
+		Common::unlockCriticalUpdate("notification");
+	}
 
     Common::display('');
-    Common::checkAndStartDBReIndex($mountedPath, 'backup');
+    my($status, $reason) = Common::checkAndStartDBReIndex($mountedPath, 'backup');
+	unless($status) {
+		$AppConfig::errStr = '2-'.Common::getStringConstant('operation_could_not_be_completed_reason').Common::getStringConstant($reason);
+		exitCleanup($AppConfig::errStr);
+	}
+
 	if ($dedup eq 'on') {
 		my @backupLocationDir = Common::getUserBackupDirListFromMountPath($localUserPath);
 		if(scalar(@backupLocationDir)>0) {
@@ -372,8 +397,9 @@ sub init {
 		}
 	}
 
+	Common::writeAsJSON($totalFileCountFile, {});
 	# Common::getCursorPos(40,"") if(-e $pidPath); #Resetting cursor position
-	startBackup() if(-e $pidPath);
+	startBackup() if(-e $pidPath and !$isBackupSetEmpty);
 	exitCleanup($AppConfig::errStr);
 }
 
@@ -442,7 +468,7 @@ sub startBackup {
 	my $retryInfo = Common::getCatfile($AppConfig::jobRunningDir, $AppConfig::retryInfo);
 	my $maxNumRetryAttempts = 1000;
 	my $engineLockFile = $AppConfig::jobRunningDir.'/'.AppConfig::ENGINE_LOCKE_FILE;
-	my $line;
+	my $line = '';
 	my $statusFilePath  = $AppConfig::jobRunningDir."/".$AppConfig::statusFile;
 
 	open(my $handle, '>', $engineLockFile) or Common::traceLog("Could not open file '$engineLockFile' $!");
@@ -466,6 +492,7 @@ START:
 
 		if($line eq "") {
 			$line = <FD_READ>;
+			$line = "" if(!$line);
 		}
 
 		if($line eq "") {
@@ -525,7 +552,7 @@ START:
 				return BACKUP_PID_FAIL;
 			}
 			elsif($backupPid == 0) {
-                $AppConfig::pidOperationFlag = "ChildProcess";
+				$AppConfig::pidOperationFlag = "ChildProcess";
 				my $retType = doBackupOperation($line, $silentBackupFlag, $jobType,$engineID,$retry_failedfiles_index);
 				exit(0);
 			}
@@ -562,7 +589,7 @@ START:
 
 	waitpid($generateFilesPid,0);
 	undef @AppConfig::linesStatusFile;
-	if($totalFiles == 0 or $totalFiles !~ /\d+/) {
+	if(!$totalFiles or $totalFiles !~ /\d+/ or $totalFiles == 0) {
 		$totalFiles    = Common::readInfoFile('TOTALFILES');
 		if($totalFiles == 0 or $totalFiles !~ /\d+/){
 			Common::traceLog("0 total files, Check DB/Cancelled during backupset generation");
@@ -570,7 +597,7 @@ START:
 	}
 	$AppConfig::totalFiles = $totalFiles;
 
-	if (-s $retryInfo > 0 && -e $pidPath && $AppConfig::retryCount <= $maxNumRetryAttempts && $exitStatus == 0) {
+	if ((-f $retryInfo && -s $retryInfo > 0) && -e $pidPath && $AppConfig::retryCount <= $maxNumRetryAttempts && $exitStatus == 0) {
 		if ($AppConfig::retryCount == $maxNumRetryAttempts) {
 
 			for(my $i=1; $i<= $AppConfig::totalEngineBackup; $i++){
@@ -602,8 +629,9 @@ START:
 		close INFO;
 		chmod $AppConfig::filePermission, $info_file;
 		sleep 5; #5 Sec
-		Common::traceLog("retrycount:".$AppConfig::retrycount);
+		Common::traceLog("retrycount:".$AppConfig::retryCount);
 		$engineID = 1;
+		Common::loadUserConfiguration(); #Reloading to handle domain connection failure case
 		goto START;
 	}
 }
@@ -614,7 +642,7 @@ START:
 # Added By			: Senthil Pandian
 #*****************************************************************************************************/
 sub removeIntermediateFiles {
-	my $evsTempDirPath  = $AppConfig::jobRunningDir."/".$AppConfig::evsTempDir;
+	# my $evsTempDirPath  = $AppConfig::jobRunningDir."/".$AppConfig::evsTempDir;
 	my $statusFilePath  = $AppConfig::jobRunningDir."/".$AppConfig::statusFile;
 	my $retryInfo       = $AppConfig::jobRunningDir."/".$AppConfig::retryInfo;
 	my $failedFiles     = $AppConfig::jobRunningDir."/".$AppConfig::failedFileName;
@@ -638,7 +666,7 @@ sub removeIntermediateFiles {
 	my $doBackupOperationErrorFile = $AppConfig::jobRunningDir."/doBackuperror.txt_";
 	my $minimalErrorRetry = $AppConfig::jobRunningDir."/".$AppConfig::minimalErrorRetry;
 
-	Common::removeItems([$evsTempDirPath, $relativeFileset.'*', $noRelativeFileset.'*', $filesOnly.'*', $infoFile, $retryInfo, $errorDir, $statusFilePath.'*', $failedFiles.'*', $utf8File.'*', $progressDetailsFilePath.'*', $engineLockFile, $errorFilePath]);
+	Common::removeItems([$relativeFileset.'*', $noRelativeFileset.'*', $filesOnly.'*', $infoFile, $retryInfo, $errorDir, $statusFilePath.'*', $failedFiles.'*', $utf8File.'*', $progressDetailsFilePath.'*', $engineLockFile, $errorFilePath]);
 	Common::removeItems([$idevsErrorFile.'*', $idevsOutputFile.'*', $backupUTFpath.'*', $operationsFilePath.'*', $doBackupOperationErrorFile.'*', $minimalErrorRetry]);
 
 	return 0;
@@ -659,8 +687,9 @@ sub exitCleanup {
 	my $retryInfo       	= $AppConfig::jobRunningDir."/".$AppConfig::retryInfo;
 	my $fileForSize		    = $AppConfig::jobRunningDir."/".$AppConfig::fileForSize;
 	my $trfSizeAndCountFile = $AppConfig::jobRunningDir."/".$AppConfig::trfSizeAndCountFile;
-	my $evsTempDirPath  	= $AppConfig::jobRunningDir."/".$AppConfig::evsTempDir;
+	# my $evsTempDirPath  	= $AppConfig::jobRunningDir."/".$AppConfig::evsTempDir;
 	my $errorDir 		    = $AppConfig::jobRunningDir."/".$AppConfig::errorDir;
+	my $fileSummaryFile     = $AppConfig::jobRunningDir."/".$AppConfig::fileSummaryFile;
 	my $pwdPath = Common::getIDPWDFile();
 	my $engineLockFile = $AppConfig::jobRunningDir.'/'.AppConfig::ENGINE_LOCKE_FILE;
 
@@ -692,15 +721,14 @@ Common::traceLog("pid Not found"); #Needs to be removed later
 
 			# In childprocess, if we exit due to some exit scenario, then this exit_flag will be true with error msg
 			my @exit = split("-", $exit_flag, 2);
-			
+			Common::traceLog("exit_flag = $exit_flag");
+
 			if($AppConfig::errStr =~ /^2\-/i) {
 				$exit[0] = 2;
 				$AppConfig::errStr =~ s/^2\-//g;
 				$exit[1] = $AppConfig::errStr;
 			}
 			
-			Common::traceLog(" exit = $exit[0] and $exit[1]");
-
 			if (!$exit[0] and $AppConfig::errStr eq '') {
 				if ($jobType eq 'scheduled') {
 					$AppConfig::errStr = Common::getStringConstant('operation_cancelled_due_to_cutoff');
@@ -713,7 +741,7 @@ Common::traceLog("pid Not found"); #Needs to be removed later
 				}
 			}
 			else {
-				if ($exit[1] ne '') {
+				if ($exit[1] and $exit[1] ne '') {
 					$AppConfig::errStr = $exit[1];
 					# Common::checkAndUpdateAccStatError(Common::getUsername(), $AppConfig::errStr);
 					# Below section has been added to provide user friendly message and clear
@@ -723,7 +751,7 @@ Common::traceLog("pid Not found"); #Needs to be removed later
 						Common::createBackupStatRenewalByJob('backup') if(Common::getUserConfiguration('DEDUP') ne 'on');
 						my $tokenMessage = Common::getStringConstant('please_login_account_using_login_and_try');
 						#$tokenMessage =~ s/___login___/$AppConfig::idriveScripts{'login'}/eg;
-						$AppConfig::errStr = $AppConfig::errStr.' '.$tokenMessage."\n";
+						$AppConfig::errStr = $AppConfig::errStr.' '.$tokenMessage."\n" unless($AppConfig::errStr =~ /try again/);
 						unlink($pwdPath);
 						if ($jobType eq "scheduled") {
 							$pwdPath =~ s/_SCH$//g;
@@ -741,7 +769,7 @@ Common::traceLog("pid Not found"); #Needs to be removed later
 		}
 	}
 	unlink($pidPath);
-	waitpid($displayProgressBarPid,0);
+	waitpid($displayProgressBarPid,0) if($displayProgressBarPid);
 	wait();
 Common::traceLog("AppConfig::errStr3:".$AppConfig::errStr); #Needs to be removed later
 
@@ -758,33 +786,36 @@ Common::traceLog("AppConfig::errStr3:".$AppConfig::errStr); #Needs to be removed
 	unlink($trfSizeAndCountFile);
 
 	Common::restoreBackupsetFileConfiguration();
-	if(-d $evsTempDirPath) {
-		Common::rmtree($evsTempDirPath);
-	}
+	# if(-d $evsTempDirPath) {
+		# Common::rmtree($evsTempDirPath);
+	# }
 	if(-d $errorDir and $errorDir ne '/') {
 		system(Common::updateLocaleCmd("rm -rf '$errorDir'"));
 	}
 
-	if (-e $AppConfig::outputFilePath and -s _ > 0) {
+	if ((-f $AppConfig::outputFilePath) and (!-z $AppConfig::outputFilePath)) {
 		my $finalOutFile = $AppConfig::outputFilePath;
 		$finalOutFile =~ s/_Running_/_$AppConfig::opStatus\_/;
 		Common::move($AppConfig::outputFilePath, $finalOutFile);
+		Common::updateLastBackupStatus($AppConfig::jobType, $AppConfig::opStatus, basename($finalOutFile));
 
-		if (Common::loadNotifications()) {
+		if (Common::loadNotifications() and Common::lockCriticalUpdate("notification")) {
 			Common::setNotification('update_localbackup_progress', ((split("/", $finalOutFile))[-1]));
+			Common::setNotification('get_localbackupset_content');
 			Common::setNotification('get_logs') and Common::saveNotifications();
+			Common::unlockCriticalUpdate("notification");
 		}
 
 		$AppConfig::outputFilePath = $finalOutFile;
 		$AppConfig::finalSummary .= Common::getStringConstant('for_more_details_refer_the_log').qq(\n);
 		# Concat log file path with job summary. To access both at once while displaying the summary and log file location.
 		$AppConfig::finalSummary .= $AppConfig::opStatus."\n".$AppConfig::errStr;
-		Common::fileWrite("$AppConfig::jobRunningDir/$AppConfig::fileSummaryFile",$AppConfig::finalSummary);
+		Common::fileWrite($fileSummaryFile,$AppConfig::finalSummary);
 
 		if ($silentBackupFlag == 0){
 			#It is a generic function used to write content to file.
-			Common::displayProgressBar($AppConfig::progressDetailsFilePath,undef,$playPause) unless ($isBackupSetEmpty);
-			Common::displayFinalSummary(Common::getStringConstant('localbackup_job'),"$AppConfig::jobRunningDir/$AppConfig::fileSummaryFile");
+			# Common::displayProgressBar($AppConfig::progressDetailsFilePath,undef,undef) unless ($isBackupSetEmpty);
+			Common::displayFinalSummary(Common::getStringConstant('localbackup_job'),$fileSummaryFile);
 			#Above function display summary on stdout once backup job has completed.
 		}
 
@@ -794,7 +825,7 @@ Common::traceLog("AppConfig::errStr3:".$AppConfig::errStr); #Needs to be removed
 	unless ($isBackupSetEmpty) {
 		Common::sendMail({
 				'serviceType' => $jobType,
-				'jobType' => 'backup',
+				'jobType' => 'Local Backup',
                 'jobName' => 'local_backupset',
 				'subject' => $subjectLine,
 				'jobStatus' => lc($AppConfig::opStatus)
@@ -802,7 +833,7 @@ Common::traceLog("AppConfig::errStr3:".$AppConfig::errStr); #Needs to be removed
 	} else {
 		Common::sendMail({
 				'serviceType' => $jobType,
-				'jobType' => 'backup',
+				'jobType' => 'Local Backup',
                 'jobName' => 'local_backupset',
 				'subject' => $subjectLine,
 				'jobStatus' => lc($AppConfig::opStatus),
@@ -848,13 +879,15 @@ sub processTerm {
 # Subroutine		: waitForEnginesToFinish
 # Objective			: Cancel the execution of backup script
 # Added By			: Senthil Pandian
-# Modified By		: Sabin Cheruvattil
+# Modified By		: Sabin Cheruvattil, Senthil Pandian
 #********************************************************************************************************/
 sub cancelBackupSubRoutine {
 	my $backupUTFpath = $AppConfig::jobRunningDir.'/'.$AppConfig::utf8File;
 	my $info_file     = $AppConfig::jobRunningDir."/".$AppConfig::infoFile;
 
 	if($AppConfig::pidOperationFlag eq "EVS_process") {
+		$backupUTFpath =~ s/\[/\\[/;
+		$backupUTFpath =~ s/{/[{]/;
 		my $psOption = Common::getPSoption();
 		my $evsCmd   = "ps $psOption | grep \"$AppConfig::evsBinaryName\" | grep \'$backupUTFpath\'";
 		$evsCmd = Common::updateLocaleCmd($evsCmd);
@@ -888,21 +921,21 @@ sub cancelBackupSubRoutine {
 		print FD_WRITE "DENIEDCOUNT $AppConfig::noPermissionCount\n";
 		print FD_WRITE "MISSINGCOUNT $AppConfig::missingCount\n";
 		close FD_WRITE;
-		close NEWFILE;
+		# close NEWFILE;
 		$AppConfig::pidOperationFlag ='';
 		exit(0);
 	}
 
 	if($AppConfig::pidOperationFlag eq "main") {
 		waitpid($generateFilesPid, WNOHANG) if($generateFilesPid);
-		if(-e $info_file and ($totalFiles == 0 or $totalFiles !~ /\d+/)) {
+		if(-e $info_file and (!defined($totalFiles) or $totalFiles == 0 or $totalFiles !~ /\d+/)) {
 			my $fileCountCmd = "cat '$info_file' | grep -m1 \"^TOTALFILES\"";
 			$totalFiles = `$fileCountCmd`;
 			$totalFiles =~ s/TOTALFILES//;
 			chomp($totalFiles) if($totalFiles ne '');
 		}
 
-		if($totalFiles == 0 or $totalFiles !~ /\d+/){
+		if(!defined($totalFiles) or $totalFiles == 0 or $totalFiles !~ /\d+/) {
 			Common::traceLog("Unable to get total files count");
 		} else {
 			$AppConfig::totalFiles = $totalFiles;
@@ -978,6 +1011,7 @@ sub doBackupOperation
 	if ($isDedup eq 'off' and $AppConfig::jobType eq "LocalBackup") {
 		my @backupTo = split("/",$backupHost);
 		$backupHost	 = (substr($backupHost,0,1) eq '/')? '/'.$backupTo[1]:'/'.$backupTo[0];
+		$backupHost	.= '/' if(substr($backupHost,-1,1) ne '/'); #Adding end slash if not
 	}
 	my $userName 	      = Common::getUsername();
 	my $backupLocationDir = Common::getLocalBackupDir();
@@ -998,7 +1032,7 @@ sub doBackupOperation
 		return 0;
 	}
 
-	Common::createUTF8File(['EXPRESSBACKUP',$backupUTFpath],
+	Common::createUTF8File(['LOCALBACKUP',$backupUTFpath],
 				$parameter_list[2],
 				$bwPath,
 				$defLocal,
@@ -1115,10 +1149,11 @@ sub displayBackupProgress {
     $AppConfig::pidOperationFlag = "DisplayProgress";
     my $keyPressEvent = Common::catchPressedKey();
     my $playPause  = $AppConfig::running;
-    my $moreOrLess = $AppConfig::less;
     my ($redrawForLess, $drawForPlayPause) = (0) x 2;
     my $bwPath = Common::getCatfile($AppConfig::jobRunningDir, $AppConfig::bwFile);
     my $temp   = $AppConfig::totalEngineBackup;
+    my $moreOrLess = $AppConfig::less;
+    $moreOrLess    = $AppConfig::more if(Common::checkScreeSize());
 
     while(-f $pidPath) {
         ($redrawForLess, $drawForPlayPause) = (0) x 2;
@@ -1156,7 +1191,7 @@ sub displayBackupProgress {
                 # Common::clearScreenAndResetCurPos();
             }					
         }
-        Common::displayProgressBar($progressDetailsFilePath,undef,$playPause,$moreOrLess,$redrawForLess)  if($playPause ne 'paused' || $drawForPlayPause);
+        Common::displayProgressBar($progressDetailsFilePath,undef,undef,$moreOrLess,$redrawForLess)  if($playPause ne 'paused' || $drawForPlayPause);
         Common::sleepForMilliSec($AppConfig::sleepTimeForProgress);# Sleep for 100/500 milliseconds				
     }
     $keyPressEvent->(0);

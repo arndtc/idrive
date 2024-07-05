@@ -23,8 +23,13 @@ our $dberror;
 # @INFO: {JOBNAME, DBPATH, OPERATION, ITEM, DATA)
 
 my $localDB;
+my $ibFolder	= "ibfolder";
+my $ibFile		= "ibfile";
+my $ibProcess	= "ibprocess";
+my $ibbkpset	= "ibbackupset";
+my $ibconfig	= "ibconfig";
 
-our ($dbh_LB, $selectFolderID, $selectFileInfo, $selectAllFile, $searchAllFileByDir, $dbh_ibFile_insert, $dbh_ibFile_update, $dbh_ibFolder_insert, $dbh_ibFolder_update);
+our ($dbh_LB, $selectFolderID, $selectFileInfo, $selectAllFile, $searchAllFileByDir, $dbh_ibFile_insert, $dbh_ibFile_update, $dbh_ibFolder_insert, $dbh_ibFolder_update, $selectBucketSize, $selectFileListByDir, $selectDirListByDir, $selectDirInfo);
 
 #****************************************************************************************************
 # Subroutine		: createLBDB
@@ -63,6 +68,7 @@ sub createLBDB {
 			$dbh->do('PRAGMA read_uncommitted = ON');
 			$dbh->do('PRAGMA case_sensitive_like = 1');
 			$dbh->do('PRAGMA journal_mode = WAL');
+			$dbh->do('PRAGMA cache_size = 10240');
 		}
 
 		1;
@@ -92,7 +98,7 @@ sub createLBDB {
 		if($_[1]) {
 			my $dbpath	= dirname($localDB) . '/';
 			my $jt		= lc(basename(dirname($dbpath)));
-			$scanf		= Common::createScanRequest($dbpath, basename($dbpath), 0, $jt);
+			$scanf		= Common::createScanRequest($dbpath, basename($dbpath), 0, $jt, 0, 1, 'all');
 		}
 
 		return (0, $scanf);
@@ -132,7 +138,7 @@ sub createTableLB {
 		   (FILEID integer primary key autoincrement,
 			DIRID integer not null,
 			NAME char(1024) not null,
-			FILE_LMD char(50) DEFAULT '-',
+			FILE_LMD DATETIME DEFAULT 0,
 			FILE_SIZE __int64,
 			FOLDER_ID char(1024) DEFAULT '-',
 			ENC_NAME char(1024) DEFAULT '-',
@@ -244,12 +250,12 @@ sub initiateDBoperation {
 		$selFileInfo			= $dbh->prepare("SELECT FILEID, FILE_LMD, FILE_SIZE, BACKUP_STATUS FROM $ibFile WHERE NAME=? AND DIRID=?");
 		$selExpressFiles		= $dbh->prepare("SELECT FILEID, FOLDER_ID, ENC_NAME FROM $ibFile WHERE BACKUP_STATUS=" . $AppConfig::dbfilestats{'BACKEDUP'});
 		$selallbkpsetitems		= $dbh->prepare("SELECT ITEM_ID, ITEM_NAME, ITEM_TYPE, ITEM_STATUS, ITEM_LMD FROM $ibbkpset WHERE 1");
-		$selProcData			= $dbh->prepare("SELECT * FROM $ibProcess WHERE 1 ORDER BY PROCESSID DESC LIMIT 1");
+		# $selProcData			= $dbh->prepare("SELECT * FROM $ibProcess WHERE 1 ORDER BY PROCESSID DESC LIMIT 1");
 		$getChildDirsByDir		= $dbh->prepare("SELECT $ibFolder.DIRID as ID, $ibFolder.NAME as DIRNAME FROM $ibFolder WHERE $ibFolder.NAME LIKE ? ORDER BY ID DESC");
 		$selfcds				= $dbh->prepare("SELECT COUNT($ibFile.FILEID) as FC, SUM($ibFile.FILE_SIZE) as FS FROM $ibFile INNER JOIN $ibFolder ON $ibFolder.DIRID = $ibFile.DIRID 
-										WHERE $ibFile.BACKUP_STATUS <> " . $AppConfig::dbfilestats{'EXCLUDED'} . " AND $ibFolder.NAME LIKE ?");
+										WHERE $ibFile.BACKUP_STATUS <> " . $AppConfig::dbfilestats{'EXCLUDED'} . " AND $ibFolder.NAME LIKE ? ESCAPE '\\'");
 		$selfcbkdup				= $dbh->prepare("SELECT COUNT($ibFile.FILEID) as FC FROM $ibFile INNER JOIN $ibFolder ON $ibFolder.DIRID = $ibFile.DIRID 
-										WHERE $ibFile.BACKUP_STATUS = " . $AppConfig::dbfilestats{'BACKEDUP'} . " AND $ibFolder.NAME LIKE ?");
+										WHERE $ibFile.BACKUP_STATUS = " . $AppConfig::dbfilestats{'BACKEDUP'} . " AND $ibFolder.NAME LIKE ? ESCAPE '\\'");
 		$findAllFilesByDir		= $dbh->prepare("SELECT $ibFile.FILEID as FID, $ibFile.NAME as FNAME, $ibFile.BACKUP_STATUS, $ibFolder.NAME as DNAME FROM $ibFile 
 										INNER JOIN $ibFolder ON $ibFolder.DIRID = $ibFile.DIRID WHERE $ibFolder.NAME LIKE ?");
 		$selexclitems			= $dbh->prepare("SELECT $ibFile.FILEID as FID, $ibFile.NAME as FNAME, $ibFolder.NAME as DNAME FROM $ibFile INNER JOIN $ibFolder ON $ibFile.DIRID = $ibFolder.DIRID 
@@ -266,7 +272,7 @@ sub initiateDBoperation {
 		$dbhUpdateProc			= $dbh->prepare("UPDATE $ibProcess SET END_TIME=? WHERE START_TIME=?");
 		$dbhUpdateDirCount		= $dbh->prepare("UPDATE $ibFolder SET DIR_COUNT=?, DIR_SIZE=? WHERE DIRID=?");
 		$dbhUpdateFile			= $dbh->prepare("UPDATE $ibFile SET FILE_LMD=?, FILE_SIZE=?, BACKUP_STATUS=? WHERE NAME=? AND DIRID=?");
-		$updBackUpSucc			= $dbh->prepare("UPDATE $ibFile SET BACKUP_STATUS=" . $AppConfig::dbfilestats{'BACKEDUP'} . " WHERE FILEID=?");
+		$updBackUpSucc			= $dbh->prepare("UPDATE $ibFile SET BACKUP_STATUS=" . $AppConfig::dbfilestats{'BACKEDUP'} . " WHERE FILEID=? AND FILE_LMD=?");
 		$updExpressBackUpSucc	= $dbh->prepare("UPDATE $ibFile SET BACKUP_STATUS=" . $AppConfig::dbfilestats{'BACKEDUP'} . ", FOLDER_ID=?, ENC_NAME=? WHERE FILEID=?");
 		$updconf				= $dbh->prepare("UPDATE $ibconfig SET CONF_VAL=? WHERE CONF_NAME=?");
 		$dbhUpdateFileStat		= $dbh->prepare("UPDATE $ibFile SET BACKUP_STATUS=? WHERE FILEID=?");
@@ -301,7 +307,7 @@ sub initiateDBoperation {
 		$selDirID->finish();
 		$selbkpsetitem->finish();
 		$selsubdirs->finish();
-		$selProcData->finish();
+		# $selProcData->finish();
 		$selallfc->finish();
 		$selAllFiles->finish();
 		$selFileInfo->finish();
@@ -794,10 +800,12 @@ sub getDirectorySizeAndCount {
 	my $item		= $_[0];
 	my $dirattr		= {'size' => 0, 'filecount' => 0};
 
-	return  if(!$item);
+	return $dirattr if(!$item);
 
 	utf8::decode($item);
+	$item =~ s/\_/\\_/g;
 	$selfcds->execute("'$item%'");
+
 	my $dirdata				= $selfcds->fetchrow_hashref;
 	$dirattr->{'size'}		= $dirdata->{'FS'} if(defined($dirdata->{'FS'}) && $dirdata->{'FS'} > 0);
 	$dirattr->{'filecount'}	= $dirdata->{'FC'} if(defined($dirdata->{'FC'}) && $dirdata->{'FC'} > 0);
@@ -820,7 +828,9 @@ sub getBackedupCountUnderDir {
 	return 0 if(!$item);
 
 	utf8::decode($item);
+	$item =~ s/\_/\\_/g;
 	$selfcbkdup->execute("'$item%'");
+
 	my $dirdata = $selfcbkdup->fetchrow_hashref;
 	my $filecount = 0;
 	$filecount = $dirdata->{'FC'} if(defined($dirdata->{'FC'}) && $dirdata->{'FC'} > 0);
@@ -867,6 +877,7 @@ sub updateDirNotBackedup {
 	$dirpath .= '/' if(substr($dirpath, -1, 1) ne '/');
 
 	utf8::decode($dirpath);
+	$dirpath =~s/\_/\\_/g;
 	$findAllFilesByDir->execute("'$dirpath%'");
 	while(my $filedata = $findAllFilesByDir->fetchrow_hashref) {
 		$fid = (defined($filedata->{'FID'}))? $filedata->{'FID'} : 0;
@@ -1029,9 +1040,10 @@ sub deleteDirsAndFilesByDirName {
 sub updateBackUpSuccess {
 	return 0 unless($_[0]);
 	my $fid			= getFileIDByFilePath($_[0]);
+	my $cmplmd		= $_[1];
 
 	eval {
-		$updBackUpSucc->execute($fid) if($fid);
+		$updBackUpSucc->execute($fid, $cmplmd) if($fid);
 	};
 	
 	return 0 if($@ || $updBackUpSucc->errstr || !$fid);
@@ -1126,15 +1138,22 @@ my ($package, $filename, $line) = caller;
 # Subroutine		: getLastProcess
 # Objective			: Gets the last record of process table
 # Added By			: Sabin Cheruvattil
+# Modified By 		: Senthil Pandian
 #*************************************************************************************
 sub getLastProcess {
-	$selProcData->execute();
-	my %procdata;
+	my %procdata = ();
+	my $selProcData = $dbh->prepare("SELECT * FROM $ibProcess WHERE 1 ORDER BY PROCESSID DESC LIMIT 1");
+
+	eval {
+		$selProcData->execute();
+		1;
+	};
+
 	my $proc	= $selProcData->fetchrow_hashref;
 	$procdata{'start'}	= defined($proc->{'START_TIME'})? $proc->{'START_TIME'} : '';
 	$procdata{'end'}	= defined($proc->{'END_TIME'})? $proc->{'END_TIME'} : '';
 	$selProcData->finish();
-	
+
 	return \%procdata;
 }
 
@@ -1541,12 +1560,21 @@ sub initiateExpressDBoperation
 		$dbh_ibFolder_insert = $dbh_LB->prepare("INSERT OR IGNORE INTO $ibFolder (NAME,FILE_LMD,FILE_SIZE) values (?,?,?)");
 		$dbh_ibFile_insert   = $dbh_LB->prepare("INSERT OR IGNORE INTO $ibFile (DIRID,NAME,FILE_LMD,FILE_SIZE,BKSET_LMD,SYNC_DATE,BKSET_NAME,HASH_VALUE,FOLDER_ID,MPC,ENC_NAME,FILE_OR_FOLDER,BACKUP_STATUS) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)");
 		$dbh_ibFolder_update = $dbh_LB->prepare("UPDATE $ibFolder SET FILE_LMD=? WHERE NAME=?");
-		$dbh_ibFile_update   = $dbh_LB->prepare("UPDATE $ibFile SET FILE_LMD=?,FILE_SIZE=? WHERE NAME=? AND FOLDER_ID=?") ;
+		$dbh_ibFile_update   = $dbh_LB->prepare("UPDATE $ibFile SET FILE_LMD=?,FILE_SIZE=? WHERE NAME=? AND FOLDER_ID=?");
+		$selectBucketSize	 = $dbh_LB->prepare("SELECT TOTAL(FILE_SIZE) as TOTALSIZE FROM $ibFile");
+		# $selectFileListByDir = $dbh_LB->prepare("SELECT trim(ibfile.NAME,\"'\") as FILENAME, ibfile.FILE_SIZE as FILESIZE, ibfile.FILE_LMD as MOD FROM $ibFile INNER JOIN ibfolder ON ibfolder.DIRID = ibfile.DIRID WHERE ibfolder.NAME LIKE ? ORDER BY ibfile.NAME LIMIT ?, ?");
+		$selectFileListByDir = qq(SELECT trim(ibfile.NAME,\"'\") as FILENAME %s FROM $ibFile INNER JOIN ibfolder ON ibfolder.DIRID = ibfile.DIRID WHERE ibfolder.NAME LIKE ? ORDER BY ibfile.NAME %s);
+		# $selectDirListByDir  = $dbh_LB->prepare("SELECT trim(NAME,\"'\") as DIRNAME, FILE_LMD as LMD FROM $ibFolder WHERE NAME IN (SELECT substr(NAME, 0, instr(substr(NAME, ?),'/') + ?) FROM $ibFolder WHERE NAME LIKE ? AND NAME NOT LIKE ? ) ORDER BY NAME");
+		$selectDirListByDir  = qq(SELECT trim(NAME,\"'\") as DIRNAME %s FROM $ibFolder WHERE NAME IN (SELECT substr(NAME, 0, instr(substr(NAME, ?),'/') + ?) FROM $ibFolder WHERE NAME LIKE ? AND NAME NOT LIKE ? ) ORDER BY NAME);
+		$selectDirInfo       = qq(SELECT %s FROM $ibFile INNER JOIN $ibFolder ON ibfolder.DIRID = ibfile.DIRID WHERE ibfolder.NAME LIKE ?);
+#select DIRID, trim(NAME,"'") from ibfolder where NAME IN (select substr(NAME, 0, instr(substr(NAME, 79),'/')+80) AS TEST from ibfolder where NAME LIKE "'/D01637046355000178630/home/test/Senthil/IDriveForLinux_2.31/IDriveForLinux/%'" AND NAME NOT LIKE "'/D01637046355000178630/home/test/Senthil/IDriveForLinux_2.31/IDriveForLinux/'") ORDER BY NAME;	
+
 	};
+
 	if($@){
 		my $errStr = "Error: Prepare statement failed for insert/update for Local Backup.";
 		Common::traceLog($errStr);
-		disconnectExpressDB();
+		disconnectExpressDB() if(defined $dbh_LB);
 		exit 0;
 	}
 }
@@ -1560,8 +1588,7 @@ sub initiateExpressDBoperation
 sub createExpressDB
 {
 	my $dbCreate   = 0;
-	my $databaseLB = Common::getExpressDBPath();
-	$databaseLB    = $_[0] if(defined($_[0]));
+	my $databaseLB = (defined($_[0]))?$_[0]:Common::getExpressDBPath();
 # Common::traceLog("createExpressDB databaseLB:$databaseLB");
 
 	my ($useridLB, $passwordLB) = ("") x 2;
@@ -1580,6 +1607,7 @@ sub createExpressDB
 		$dbh_LB->do('PRAGMA read_uncommitted = on');
 		$dbh_LB->do('PRAGMA case_sensitive_like = 1');
 		$dbh_LB->do('PRAGMA journal_mode = wal'); 
+		$dbh_LB->do('PRAGMA cache_size = 10240');
 
 		1;
 	} or do {
@@ -1642,7 +1670,7 @@ sub createTableExpressLB
 	   (FILEID integer primary key autoincrement,
 	    DIRID integer not null,
 		NAME char(1024) not null,
-		FILE_LMD char(256),
+		FILE_LMD DATETIME DEFAULT 0,
 		FILE_SIZE __int64,
 		FILE_OR_FOLDER integer DEFAULT 0,
 		BKSET_LMD char(50),
@@ -1729,6 +1757,7 @@ sub checkFolderExistenceInExpressDB
 sub insertExpressFolders
 {	
 	my $keyString  = $_[0];
+	my $fileLMD	   = (defined $_[1])?$_[1]:0;
 	#my $mpcName    = (substr($_[1],0,1) eq '/')?$_[1]:"/".$_[1]; #Commented to avoid too many '/' at beginning
 	my $mpcName    = '';
 	my $folderPath = substr($keyString,0,rindex ($keyString, '/'))."/";
@@ -1744,6 +1773,7 @@ sub insertExpressFolders
 			last;
 		}else{
 			my ($modtime, $fieldSize) = Common::getSizeLMD($string);
+			$modtime = ($modtime!=0)?$modtime:$fileLMD;
 			insertExpressIbFolder(1, $searchItem,$modtime,'0');
 		}
 	}
@@ -1889,6 +1919,7 @@ sub disconnectExpressDB
 		$dbh_ibFile_insert->finish();
 		$dbh_ibFolder_update->finish();
 		$dbh_ibFile_update->finish();
+		$selectBucketSize->finish();
 		$dbh_LB->disconnect();
 		$dbh_LB = undef;
 	}
@@ -2002,6 +2033,233 @@ sub commitExpressDBProcess {
 		return 0;
 	}
 	return 1;
+}
+
+#*************************************************************************************
+# Subroutine		: getBucketSize
+# Objective			: This subroutine to get & return total size of files in a bucket.
+# Added By			: Senthil Pandian
+#*************************************************************************************
+sub getBucketSize {
+	$selectBucketSize->execute();
+	my $res	= $selectBucketSize->fetchrow_hashref;
+	$selectBucketSize->finish();
+
+	my $size = $res->{'TOTALSIZE'};
+	return 0 if(!$size);
+	return $size;
+}
+
+#*************************************************************************************
+# Subroutine		: getExpressDataList
+# Objective			: This subroutine to get & return local backup items list.
+# Added By			: Senthil Pandian
+#*************************************************************************************
+sub getExpressDataList {
+	my $dirName    = $_[0];
+	my $outParams  = $_[1];
+	my $outputFile = $_[2];
+	my $folderList = $_[3];
+	my $split      = $_[4];
+	my $offset     = $_[5];
+	my $limit      = $_[6];
+	my $splitCount = ($split and !$limit)?$AppConfig::splitCount:$limit;
+
+	# $selectDirListByDir->execute($dirID, $limit, $offset);
+	# (NAME, 0, instr(substr(NAME, ?),'/')+?) FROM $ibfolder WHERE NAME LIKE ?  AND NAME NOT LIKE ? ) ORDER BY NAME LIMIT ?,?")
+	# $dirName .= '/' if(substr($dirName,-1,1) ne '/');
+	my $finalDirPath  = "\'".$dirName."\'";
+	my $searchDirPath = "\'".$dirName."%\'";
+	my $dirStrLength  = length($dirName);
+	my %dirList 	  = ();
+	my %fileList	  = ();
+	my @dirArr 		  = ();
+	my @fileArr  	  = ();
+	my @outParamsArr  = ();
+	
+	unless(Common::reftype(\$outParams) eq 'SCALAR'){
+		@outParamsArr  = @{$outParams};
+	} else {
+		push(@outParamsArr, $outParams);
+	}
+
+	my ($fileFields, $dirFields, $dirInfo) = ('') x 3;
+	my ($needDirFilesCount, $needDirTotalSize) = (0) x 2;
+	my @fileFieldsArr = ();
+	my @dirFieldsArr  = ();
+
+	if(@outParamsArr) {
+		foreach (@outParamsArr) {
+			if($_ eq 'DIR_FILESCOUNT') {
+				$needDirFilesCount = 1;
+				$dirInfo .= $AppConfig::dbFields{$_}.', ';
+				push(@dirFieldsArr, $_);
+			} elsif($_ eq 'DIR_TOTALSIZE') {
+				$needDirTotalSize  = 1;
+				$dirInfo .= $AppConfig::dbFields{$_}.', ';
+				push(@dirFieldsArr, $_);
+			} else {
+				# next if($_ eq 'TYPE');
+				if($_ =~ /^DIR_/) {
+					$dirFields .= ', '.$AppConfig::dbFields{$_};
+					$_ =~ s/^DIR_//;
+					push(@dirFieldsArr, $_);
+				} elsif(exists($AppConfig::dbFields{$_})) {
+					$fileFields .= ', '.$AppConfig::dbFields{$_};
+					push(@fileFieldsArr, $_);
+				}
+			}
+		}
+
+		if($dirInfo) {
+			Common::Chomp(\$dirInfo);
+			chop($dirInfo) if(substr($dirInfo, -1, 1) eq ',');
+		}
+	}
+
+# my $limitStr   = ($limit)?"LIMIT $offset,$limit":'';
+# Common::traceLog("$dirStrLength+2, $dirStrLength+3, $searchDirPath, $finalDirPath, $offset, $limit");
+
+# my $prepsql	= sprintf($selectDirListByDir);
+# Common::traceLog("prepsql:$prepsql");
+# my $sqlop = $dbh_LB->prepare($prepsql);
+
+	if($folderList) {
+		my $sqlop;
+		if($dirInfo) {
+			my $prepsql	= sprintf($selectDirInfo, $dirInfo);
+		# Common::traceLog("prepsql:$prepsql");
+			$sqlop = $dbh_LB->prepare($prepsql);
+		}
+
+		my $dirFieldsSQL	= sprintf($selectDirListByDir, $dirFields);
+		my $dirSqlOp = $dbh_LB->prepare($dirFieldsSQL);
+		$dirSqlOp->execute($dirStrLength+2, $dirStrLength+3, $searchDirPath, $finalDirPath);
+		my ($index, $itemsCount) = (1, 0);
+		while(my $filedata = $dirSqlOp->fetchrow_hashref) {
+			next unless(defined($filedata->{'DIRNAME'}));
+
+			my $dirName = Common::removeLastSlash($filedata->{'DIRNAME'});
+			$dirName = substr($dirName, $dirStrLength);
+
+			# $dirList{$dirName} = {};
+			$dirList{'path'} = $dirName;
+			$dirList{'type'} = "folder";
+			$dirList{'size'} = "-";
+			$dirList{'lmd'}  = "-";
+			if($needDirFilesCount || $needDirTotalSize) {
+				$sqlop->execute("'".$filedata->{'DIRNAME'}."%");
+				my $res	= $sqlop->fetchrow_hashref;
+				$sqlop->finish();
+				if($needDirTotalSize) {
+					$dirList{'DIR_TOTALSIZE'}  = ($res->{'TOTALSIZE'})?$res->{'TOTALSIZE'}:0;
+				}
+				if($needDirFilesCount) {
+					$dirList{'DIR_FILESCOUNT'} = ($res->{'FILESCOUNT'})?$res->{'FILESCOUNT'}:0;
+				}
+			}
+
+			$itemsCount++;
+			foreach (@dirFieldsArr) {
+# Common::traceLog("#".$_."#");
+				if(exists $filedata->{$_}) {
+					$dirList{lc($_)} = $filedata->{$_};
+				}
+				# elsif($_ =~ /TYPE/) {
+					# $dirList{$dirName}{$_} = 'd';
+				# } else {
+					# $dirList{$dirName}{$_} = '-';
+				# }
+			}
+			push(@dirArr,{%dirList}) if(%dirList);
+			%dirList = ();
+			if($split && $itemsCount == $splitCount) {
+				Common::fileWrite($outputFile.$AppConfig::localFolderList.'_'.$index, JSON::to_json(\@dirArr));
+				chmod($AppConfig::filePermission, $outputFile.$AppConfig::localFolderList.'_'.$index);
+				@dirArr  = ();
+				$itemsCount = 0;				
+				$index++;
+			}			
+		}
+
+		if($split && $itemsCount) {
+			Common::fileWrite($outputFile.$AppConfig::localFolderList.'_'.$index, JSON::to_json(\@dirArr));
+			chmod($AppConfig::filePermission, $outputFile.$AppConfig::localFolderList.'_'.$index);
+			@dirArr  = ();
+		}
+		$sqlop->finish() if($sqlop);
+		$dirSqlOp->finish() if($dirSqlOp);
+	}
+
+	# my $dirCount = scalar(keys %dirList);
+# Common::traceLog("dirCount:$dirCount");
+# Common::traceLog("limit:$limit");
+
+	# if($fields) {
+		# Common::Chomp(\$fields);
+		# chop($fields);
+		# $fields = ", ".$fields;
+	# }
+# Common::traceLog("selectFileListByDir:$selectFileListByDir");
+# Common::traceLog("fields:$fields");
+	my $limitStr = ($limit and !$split)?"LIMIT $offset,$limit":'';
+	my $prepsql	= sprintf($selectFileListByDir, $fileFields, $limitStr);
+# Common::traceLog("prepsql:$prepsql");
+	my $sqlop = $dbh_LB->prepare($prepsql);
+	$sqlop->execute($finalDirPath);
+
+	my ($index, $itemsCount) = (1, 0);
+	while(my $filedata = $sqlop->fetchrow_hashref) {
+		next unless(defined($filedata->{'FILENAME'}));
+# Common::traceLog("FILENAME:".$filedata->{'FILENAME'});
+		$itemsCount++;
+		$fileList{'path'} = $filedata->{'FILENAME'};
+		$fileList{'type'} = 'file';
+		foreach (@outParamsArr) {
+			if(exists $filedata->{$_}) {
+# Common::traceLog("$_:".$filedata->{$_});
+				$fileList{lc($_)} = $filedata->{$_};
+			}
+			# elsif($_ =~ /TYPE/) {
+				# $fileList{$filedata->{'FILENAME'}}{$_} = 'f'; 
+			# }				
+		}
+		push(@fileArr,{%fileList}) if(%fileList);
+		%fileList = ();
+		if($split and $itemsCount == $splitCount) {
+			Common::fileWrite($outputFile."_".$index, JSON::to_json(\%fileList));
+			chmod($AppConfig::filePermission, $outputFile."_".$index);
+			@fileArr = ();
+			$itemsCount = 0;				
+			$index++;
+		}
+	}
+
+	if($split and $itemsCount) {
+		Common::fileWrite($outputFile."_".$index, JSON::to_json(\%fileList));
+		chmod($AppConfig::filePermission, $outputFile."_".$index);
+		@fileArr = ();
+	}
+	$sqlop->finish() if($sqlop);
+	return (\@dirArr, \@fileArr);
+}
+
+#*************************************************************************************
+# Subroutine		: checkExpressDBschema
+# Objective			: This subroutine to get & return local backup items list.
+# Added By			: Senthil Pandian
+#*************************************************************************************
+sub checkExpressDBschema {
+	my $isLMDChanged = 0;
+	my $sqlop = $dbh_LB->prepare("PRAGMA table_info(ibfile)");
+	$sqlop->execute();
+	while(my $filedata = $sqlop->fetchrow_hashref) {
+		if($filedata->{'name'} eq 'FILE_LMD' and $filedata->{'type'} =~ /char/) {
+			$isLMDChanged = 1;
+			last;
+		}
+	}
+	return $isLMDChanged;
 }
 
 1;

@@ -450,7 +450,7 @@ sub checkBackupsetItemStatus {
 	#Checking pid & cancelling process if job terminated by user
 	my $pidPath = "$jobRunningDir/pid.txt";
 	cancelProcess()		unless(-e $pidPath);
-
+START:
 	my $itemStatusUTFpath = $jobRunningDir.'/'.$AppConfig::utf8File;
 	my $evsErrorFile      = $jobRunningDir.'/'.$AppConfig::evsErrorFile;
 	Common::createUTF8File(['ITEMSTATUS',$itemStatusUTFpath],
@@ -470,6 +470,10 @@ sub checkBackupsetItemStatus {
 			if($errStr and $errStr =~ /1-/){
 				$errStr =~ s/1-//;
 				exitCleanup($errStr);
+			}
+			elsif($errStr and $errStr =~ m/Name or service not known/i) {
+				unlink($evsErrorFile);
+				goto START;
 			}
 		}
 		return 0;
@@ -1382,8 +1386,9 @@ sub renameLogFile{
 
 	Common::addLogStat($jobRunningDir, \%logStat);
 
-	if (Common::loadNotifications()) {
+	if (Common::loadNotifications() and Common::lockCriticalUpdate("notification")) {
 		Common::setNotification('get_logs') and Common::saveNotifications();
+		Common::unlockCriticalUpdate("notification");
 	}
 
 	return 1;

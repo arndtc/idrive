@@ -56,7 +56,7 @@ sub init {
 # Subroutine			: viewLog
 # Objective				: This subroutine to display the logs based on user's option.
 # Added By				: Senthil pandian
-# Modified By			: Sabin Cheruvattil
+# Modified By			: Sabin Cheruvattil, Senthil pandian
 #****************************************************************************************************/
 sub viewLog {
 	# show log menu and get the input from user
@@ -68,11 +68,13 @@ sub viewLog {
 	my $jobDir = $logDir;
 	$jobDir =~ s/LOGS//;
 	my $pidPath  = Common::getCatfile($jobDir, $AppConfig::pidFile);
-	Common::checkAndRenameFileWithStatus($jobDir, $logMenuToPathMap{$userMenuChoice}{'type'}) unless(-e $pidPath);
+	if(!-e $pidPath or !Common::isFileLocked($pidPath)) {
+		Common::checkAndRenameFileWithStatus($jobDir, $logMenuToPathMap{$userMenuChoice}{'type'});
+	}
 
 	my %logFileList = Common::getLogsList($logDir);
 
-	# make sure the logs are present for the selected job type: backup, restore, express backup
+	# make sure the logs are present for the selected job type: backup, restore, local backup
 	Common::retreat(["\n", 'no_logs_found', '.', ' ', 'please_try_again', '.']) unless scalar keys %logFileList;
 
 	# show date menu and get inputs from user
@@ -155,10 +157,12 @@ sub deleteLogs {
 		$jobDir =~ s/LOGS//;
 
 		my %logFileList = Common::getLogsList($logDir);
+
 		my $logPIDFile = Common::getCatfile($jobDir, $AppConfig::logPidFile);
 		if (-f $logPIDFile) {
 			delete $logFileList{(split('_', basename(Common::getFileContents($logPIDFile))))[0]};
 		}
+
 		if (scalar %logFileList) {
 			my @allLogs = keys %logFileList;
 			my $slf;
@@ -192,8 +196,9 @@ sub deleteLogs {
 	#Common::displayTitlewithUnderline(Common::getStringConstant('total_logs_deleted'));
 	Common::display('summary_of_deleted_logs',1);
 	foreach my $jobType (keys %AppConfig::logMenuAndPaths) {
-		Common::display([$jobType,': ',$deletedLogs{$jobType}],1);
+		Common::display([$jobType, ': ', $deletedLogs{$jobType}], 1);
 	}
+
 	Common::display('', 1);
 }
 

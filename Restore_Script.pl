@@ -101,6 +101,7 @@ Common::checkAccountStatus($silentFlag? 0 : 1);
 if ($silentFlag == 0 and $ARGV[0] != Constants->CONST->{'versionRestore'} and $ARGV[0] ne 'SCHEDULED'){ #To prevent the calling of headerDisplay() subroutine.
 	headerDisplay($0);
 }
+
 my $errorFilePresent = false;
 my $invalidCharPresent = false;
 my $lineCount;
@@ -144,12 +145,7 @@ $SIG{USR1} = \&process_term;
 $SIG{WINCH} = \&Common::changeSizeVal;
 
 #Assigning Perl path
-my $perlPathCmd = Common::updateLocaleCmd('which perl');
-my $perlPath = `$perlPathCmd`;
-chomp($perlPath);
-if($perlPath eq ''){
-	$perlPath = '/usr/local/bin/perl';
-}
+my $perlPath = $AppConfig::perlBin;
 
 my $RestoreFileName = $RestoresetFile;
 chmod $filePermission, $RestoreFileName;
@@ -218,8 +214,8 @@ $statusFilePath = "$jobRunningDir/STATUS_FILE";
 $search = "$jobRunningDir/Search";
 my $info_file = "$jobRunningDir/info_file";
 $retryinfo = "$jobRunningDir/$retryinfo";
-$evsTempDirPath = "$jobRunningDir/evs_temp";
-$evsTempDir = $evsTempDirPath;
+# $evsTempDirPath = "$jobRunningDir/evs_temp";
+# $evsTempDir = $evsTempDirPath;
 my $failedfiles = $versionRestoresetFile."/".$failedFileName;
 $idevsOutputFile = "$jobRunningDir/output.txt";
 $idevsErrorFile = "$jobRunningDir/error.txt";
@@ -253,8 +249,10 @@ if(!-d $errorDir) {
 
 my $operationType = Constants->CONST->{'RestoreOp'};
 # Deciding Restore set File based on normal restore or version restore
-if($ARGV[0] eq Constants->CONST->{'versionRestore'}) {
+if($ARGV[0] eq Constants->CONST->{'versionRestore'} or (defined($ARGV[2]) and $ARGV[2] eq Constants->CONST->{'versionRestore'})) {
 	$RestoreFileName = $jobRunningDir."/versionRestoresetFile.txt";
+	$RestoreSetJsonFile = Common::getCatfile($jobRunningDir, $AppConfig::versionRestoreFile);
+	Common::fileWrite($RestoreFileName, Common::getFileContents($RestoreSetJsonFile));
 	$operationType = Constants->CONST->{'VersionOp'};
 }
 
@@ -267,20 +265,22 @@ if($ARGV[0] eq Constants->CONST->{'versionRestore'}) {
 #my $encType = checkEncType($isScheduledJob); # This function has been called inside getOperationFile() function.
 #createUpdateBWFile(); #Commented by Senthil: 13-Aug-2018
 #my $isEmpty = checkPreReq($RestoreFileName,$jobType,$taskType,'NORESTOREDATA');
-my $isEmpty = Common::checkPreReq($RestoreFileName, lc($jobType), $jobType, 'NORESTOREDATA');
+my $isEmpty = Common::checkPreReq($RestoreFileName, lc($jobType), 'NORESTOREDATA');
 if($isEmpty and $isScheduledJob == 0 and $silentFlag == 0) {
 	unlink($pidPath);
 	Common::retreat(["\n",$AppConfig::errStr]);
 }
+
 createLogFiles("RESTORE");
 #$info_file = $jobRunningDir."/info_file";
 $failedfiles = $jobRunningDir."/".$failedFileName;
 createRestoreTypeFile();
 
 Common::setUsername($userName) if(defined($userName) && $userName ne '');
-if (Common::loadAppPath() and Common::loadServicePath() and Common::isLoggedin() and Common::loadNotifications()) {
+if (Common::loadAppPath() and Common::loadServicePath() and Common::isLoggedin() and Common::loadNotifications() and Common::lockCriticalUpdate("notification")) {
 	Common::setNotification('update_restore_progress', ((split("/", $outputFilePath))[-1]));
 	Common::saveNotifications();
+	Common::unlockCriticalUpdate("notification");
 }
 
 =beg
@@ -291,7 +291,10 @@ if(${ARGV[0]} eq ""){				#Only for Manual Restore.
 # Modified as per review comment: Senthil
 if (Common::getUserConfiguration('RESTORELOCATIONPROMPT') and $ARGV[0] ne Constants->CONST->{'versionRestore'}) {
     Common::editRestoreLocation(1) if($AppConfig::callerEnv ne 'BACKGROUND');
-    unless(-w Common::getUserConfiguration('RESTORELOCATION')) {
+    $location = Common::getUserConfiguration('RESTORELOCATION');
+	utf8::decode($location);
+
+    unless(-w $location) {
         $errStr = Common::getStringConstant('operation_could_not_be_completed_reason').Common::getStringConstant('invalid_restore_location');
         Common::retreat(["\n",$errStr]) if($AppConfig::callerEnv ne 'BACKGROUND');
     } else {
@@ -300,12 +303,13 @@ if (Common::getUserConfiguration('RESTORELOCATIONPROMPT') and $ARGV[0] ne Consta
     }
 }
 
-$location = $restoreLocation;
 $mail_content_head = writeLogHeader($isScheduledJob,$operationType);
 if($isScheduledJob == 0 and $silentFlag == 0 and !$isEmpty and -e $pidPath) {
 	# getCursorPos();
     Common::getCursorPos(40,Common::getStringConstant('preparing_file_list'));
 }
+
+Common::writeAsJSON($totalFileCountFile, {});
 
 startRestore() if(!$isEmpty and -e $pidPath and !$errStr);
 exit_cleanup($errStr);
@@ -326,7 +330,7 @@ sub startRestore {
 		return;
 	}
 
-    if($generateFilesPid == 0) {
+	if($generateFilesPid == 0) {
         generateRestoresetFiles();
         exit(0);
     }
@@ -341,7 +345,19 @@ sub startRestore {
 		}
 
 		if($displayProgressBarPid == 0) {
-            displayRestoreProgress();
+            my %fileInfo = ();
+            my $restoreFileName = Common::getCatfile($AppConfig::jobRunningDir, $AppConfig::versionRestoreFile);
+
+            if($operationType eq Constants->CONST->{'VersionOp'} and -f $restoreFileName){
+                my $data  = Common::getFileContents($restoreFileName);
+                %fileInfo = %{JSON::from_json($data)} unless($data =~ /_IBVER/);
+            }
+			
+			if(exists($fileInfo{'opType'}) and $fileInfo{'opType'} =~ /folderVersioning|snapshot/) {
+                displayFolderVersionRestoreProgress();
+            } else {
+                displayRestoreProgress();
+            }
 			exit(0);
 		}
 	}
@@ -353,6 +369,7 @@ sub startRestore {
 
 	my $exec_cores = getSystemCpuCores();
     my $writeOutputHeading = 1;
+	Common::loadAndWriteAsJSON($totalFileCountFile, {$AppConfig::startTimeKey => mktime(localtime)});
 
 START:
 	if (-e $info_file){
@@ -427,9 +444,9 @@ START:
 						return RESTORE_PID_FAIL;
 					}
 					elsif($restorePid == 0) {
-                        $pidOperationFlag = "ChildProcess";
-                        my $retType = doRestoreOperation($line,$taskType,$engineID,$retry_failedfiles_index);
-                        exit(0);
+						$pidOperationFlag = "ChildProcess";
+						my $retType = doRestoreOperation($line,$taskType,$engineID,$retry_failedfiles_index);
+						exit(0);
 					}
 					else{
 						push (@RestoreForkchilds, $restorePid);
@@ -474,8 +491,11 @@ START:
 				}
 			}
 		}
-		if(-s $retryinfo > 0 && -e $pidPath && $retrycount <= $maxNumRetryAttempts && $exitStatus == 0) {
-			if($retrycount == $maxNumRetryAttempts) {
+		# if(-s $retryinfo > 0 && -e $pidPath && $retrycount <= $maxNumRetryAttempts && $exitStatus == 0) {
+			# if($retrycount == $maxNumRetryAttempts) {
+        if(-s $retryinfo > 0 && -e $pidPath &&
+            ((-f $minimalErrorRetry) ? ($retrycount <= $minRetryAttempts) : ($retrycount <= $maxNumRetryAttempts)) && $exitStatus == 0) {
+            if ((-f $minimalErrorRetry) ? ($retrycount >= $minRetryAttempts) : ($retrycount >= $maxNumRetryAttempts)) {
 				for(my $i=1; $i<= $totalEngineBackup; $i++){
 					if(-e $statusFilePath."_".$i  and  -s $statusFilePath."_".$i>0){
 						readStatusFile($i);
@@ -499,7 +519,10 @@ START:
 			print INFO "FAILEDCOUNT $nonExistsCount\n";
 			close INFO;
 			chmod $filePermission, $info_file;
+			sleep 5; #5 Sec
+            Common::traceLog("retrycount: $retrycount");
 			$engineID = 1;
+			Common::loadUserConfiguration(); #Reloading to handle domain connection failure case
 			goto START;
 		}
 	}
@@ -511,13 +534,14 @@ START:
 # Added By				  : Dhritikana
 #*****************************************************************************************************/
 sub checkRestoreItem {
+    my %list = ();
 	if(!open(RESTORELIST, $RestoreFileName)){
 		Common::traceLog(Constants->CONST->{'FileOpnErr'}." $RestoreFileName , Reason: $!");
-		return 0;
+		return %list;
 	}
 	if(!open(RESTORELISTNEW, ">", $RestoreItemCheck)){
 		Common::traceLog(Constants->CONST->{'FileOpnErr'}." $RestoreItemCheck , Reason: $!");
-		return 0;
+		return %list;
 	}
 	$tempRestoreHost = $restoreHost;
 	if($dedup eq 'on'){
@@ -541,6 +565,7 @@ sub checkRestoreItem {
 	close(RESTORELISTNEW);
 
 GETSTAT:
+=beg
 	my @itemsStat = ();
 	my $checkItemUtf = getOperationFile( Constants->CONST->{'ItemStatOp'}, $RestoreItemCheck);
 
@@ -562,6 +587,58 @@ GETSTAT:
 	unlink($checkItemUtf);
 	unlink($RestoreItemCheck);
 	return @itemsStat;
+=cut
+	my $itemStatusUTFpath = $jobRunningDir.'/'.$AppConfig::utf8File;
+	my $evsErrorFile      = $jobRunningDir.'/'.$AppConfig::evsErrorFile;
+	Common::createUTF8File(['ITEMSTATUS',$itemStatusUTFpath, 1],
+		$RestoreItemCheck,
+		$evsErrorFile,
+        ''
+		);
+
+	if(!-f $itemStatusUTFpath) {
+		Common::traceLog('failed_to_create_utf8_file');
+		return %list;
+	}
+
+	my @responseData = Common::runEVS('item',1);
+	unlink($RestoreItemCheck);
+
+	if(-s $evsErrorFile > 0) {
+		unless(Common::checkAndUpdateServerAddr($evsErrorFile)) {
+			exit_cleanup(Common::getStringConstant('operation_could_not_be_completed_please_try_again'));
+		} else {
+			my $errStr = Common::checkExitError($evsErrorFile,'archive');
+			if($errStr and $errStr =~ /1-/){
+				$errStr =~ s/1-//;
+				exit_cleanup($errStr);
+			}
+		}
+		return %list;
+	}
+	unlink($evsErrorFile);
+   
+    foreach my $tmpLine (@responseData) {
+        my @fields = $tmpLine;
+        if (ref($fields[0]) ne "HASH") {
+            next;
+        }
+
+        my $itemName = $fields[0]{'fname'};
+        Common::replaceXMLcharacters(\$itemName);
+        $itemName =~ s/^[\/]+/\//g;
+
+        if($fields[0]{'status'} =~ /directory exists/) {
+            # startSearchOperation($itemName);
+            $list{$itemName} = 'd';
+        }
+        elsif($fields[0]{'status'} =~ /file exists/){
+            $list{$itemName} = 'f';
+        } else {
+            $list{$itemName} = 0;
+        }
+    }
+    return %list;
 }
 
 #****************************************************************************************************
@@ -573,16 +650,18 @@ GETSTAT:
 sub enumerateRemote {
 	my $remoteFolder  = $_[0];
 	my $searchForRestore = 1;
-    my $splitsize = 0;
+	my $splitsize = 0;
 
 	if( !-e $pidPath) {
 		return 0;
 	}
     # remove / from begining for folder to avoid // while creating utf8 file.
 
-	if(substr($remoteFolder, -1, 1) eq "/") {
-		chop($remoteFolder);
-	}
+	#Commented by Senthil: 04-Jan-2022
+	# if(substr($remoteFolder, -1, 1) eq "/") {
+		# chop($remoteFolder);
+	# }
+	$remoteFolder .= '/' if(substr($remoteFolder, -1, 1) ne "/");
 
 	# final EVS command to execute
 	if(! -d $search) {
@@ -593,56 +672,94 @@ sub enumerateRemote {
 		chmod $filePermission, $search;
 	}
 
-	my $searchOutput = $search."/output.txt";
-	my $searchError = $search."/error.txt";
 	my $searchRetryCount = 5;
+	my $tempSearchUTFpath = $search.'/'.$AppConfig::utf8File;
+	my $tempEvsOutputFile = $search.'/'.$AppConfig::evsOutputFile;
+	my $tempEvsErrorFile  = $search.'/'.$AppConfig::evsErrorFile;
 
 STARTSEARCH:
-	my $searchUtfFile = getOperationFile(Constants->CONST->{'SearchOp'}, $remoteFolder);
-	if(!$searchUtfFile) {
+	# my $searchOp = ($AppConfig::versionToRestore>$AppConfig::maxFileVersion)?'SNAPSHOTSEARCH':'SEARCH';
+	if($AppConfig::versionToRestore>$AppConfig::maxFileVersion) {
+		Common::createUTF8File(['SNAPSHOTSEARCH',$tempSearchUTFpath, 1],
+					0,
+					$AppConfig::versionToRestore,
+					$tempEvsOutputFile,
+					$tempEvsErrorFile,
+					$remoteFolder,
+					) or Common::retreat('failed_to_create_utf8_file');
+	} else {
+		Common::createUTF8File(['SEARCH',$tempSearchUTFpath, 1],
+					$tempEvsOutputFile,
+					$tempEvsErrorFile,
+					$remoteFolder,
+					) or Common::retreat('failed_to_create_utf8_file');
+	}			
+# print "\n".Common::getFileContents($tempSearchUTFpath)."\n";
+	my @responseData = Common::runEVS('item',1,0,$tempSearchUTFpath);
+	
+	while(-e $pidPath){
+		last if((-e $tempEvsOutputFile and -s _) or (-e $tempEvsErrorFile and -s _));
+		sleep(2);
+	}
+
+	if(-s $tempEvsOutputFile == 0 and -s $tempEvsErrorFile > 0) {
+		my $errStr = Common::checkExitError($tempEvsErrorFile,'archive');
+		if($errStr and $errStr =~ /1-/){
+			$errStr =~ s/1-//;
+			exit_cleanup($errStr);
+		}
+		Common::traceLog('SEARCHARCHIVE Retry');
+		$totalNoOfRetry--;
+		next if($totalNoOfRetry);
 		return 0;
 	}
 
-	$searchUtfFile =~ s/\'/\'\\''/g;
-	$idevsutilCommandLine = "'$idevsutilBinaryPath'".$whiteSpace.$idevsutilArgument.$assignmentOperator."'".$searchUtfFile."'".$whiteSpace.$errorRedirection;
-#	my $commandOutput = `$idevsutilCommandLine`;
-	# EVS command execute
-	$idevsutilCommandLine = Common::updateLocaleCmd($idevsutilCommandLine);
-	$res = `$idevsutilCommandLine`;
-	# traceLog(qq(res - $res));
-
-	if("" ne $res and $res !~ /no version information available/i){
-		$errStr = "search cmd syntax error found\n";
-		return REMOTE_SEARCH_CMD_ERROR;
+	# parse search output.
+	open my $SEARCHOUTFH, "<", $tempEvsOutputFile or ($errStr = Common::getStringConstant('failed_to_open_file').":$tempEvsOutputFile. Reason:$!");
+	if($errStr ne ""){
+		Common::traceLog($errStr);
+		return 0;
 	}
 
 	# update server address if cmd failed due to wrong evs server address
-	unless(updateServerAddr($searchError)){
+	unless(updateServerAddr($tempEvsErrorFile)){
 		$searchRetryCount--;
 		goto STARTSEARCH if($searchRetryCount);
 	}
 
-	if(-s $searchError > 0) {
+	if(-s $tempEvsErrorFile > 0) {
 		$errStr = "Remote folder enumeration has failed.\n";
-		checkExitError($searchError);
+		checkExitError($tempEvsErrorFile);
 		writeParameterValuesToStatusFile($fileBackupCount, $fileRestoreCount, $fileSyncCount, $failedfiles_count, $deniedFilesCount, $missingCount, 0, 0, $exit_flag, $failedfiles_index, $engineID);
 		return REMOTE_SEARCH_FAIL;
 	}
 	unlink($searchUtfFile);
 
 	# parse serach output.
-	open OUTFH, "<", $searchOutput or ($errStr = "cannot open :$searchOutput: of search result for $remoteFolder");
+	open OUTFH, "<", $tempEvsOutputFile or ($errStr = "cannot open :$tempEvsOutputFile: of search result for $remoteFolder");
 	if($errStr ne ""){
 		Common::traceLog($errStr);
 		return REMOTE_SEARCH_OUTPUT_PARSE_FAIL;
 	}
-
-	if($dedup eq 'on'){
+# print "versionToRestore:".$AppConfig::versionToRestore."\n";
+	# if($dedup eq 'on'){
 		while(<OUTFH>){
-            if($_ =~ /<item/ and $_ !~ /tot_items_deleted|items_found|files_found/){
+# Common::traceLog("itemName::".$_);
+            if($_ =~ /<item/ and $_ !~ /tot_items_deleted|items_found|files_found|items_count/){
                 my %itemName = Common::parseXMLOutput(\$_);
                 my $fname = $itemName{'fname'};
-                replaceXMLcharacters(\$fname);
+				chomp($fname);
+                replaceXMLcharacters(\$fname);               
+				my $version = $itemName{'file_ver'};
+ # Common::traceLog("fname::$fname#");
+ # Common::traceLog("versionToRestore::".$AppConfig::versionToRestore);
+ # Common::traceLog("version::".$version);
+				if($AppConfig::versionToRestore > 30) {
+					$fname .= "_IBVER".$version;
+				} elsif($AppConfig::versionToRestore > 1) {
+					next if(($version - ($AppConfig::versionToRestore - 1)) <= 0);
+					$fname .= "_IBVER".($version - ($AppConfig::versionToRestore - 1));
+				}
 
                 my $quoted_current_source = quotemeta($current_source);
                 if($relative == 0) {
@@ -683,58 +800,7 @@ STARTSEARCH:
                 }
             }
 		}
-	} else {
-		while(<OUTFH>){
-			@fileName = split(/\] \[/, $_, SPLIT_LIMIT_SEARCH_OUTPUT);		# split to get file name.
-			if($#fileName != 5) {
-				next;
-			}
-			chomp($fileName[5]);
-			chop($fileName[5]);			# remove lat character as ']'.
-			$temp = $fileName[5];
 
-			my $quoted_current_source = quotemeta($current_source);
-			if($relative == 0) {
-				if($current_source ne "/") {
-					if($temp =~ s/^$quoted_current_source//) {
-						print $filehandle $temp.$lineFeed;
-					} else {
-						next;
-					}
-				} else {
-					print $filehandle $temp.$lineFeed;
-				}
-			}
-			else {
-				if($temp =~ /\^$remoteFolder/) {
-					$current_source = "/";
-					print RESTORE_FILE $temp.$lineFeed;
-					$RestoresetFileTmp = $RestoresetFile_relative;
-				}
-			}
-
-			$totalFiles++;
-			$filecount++;
-			$size = $fileName[1];
-			$size =~ s/\D+//g;
-			$size =~ s/\s+//g;
-            if($size =~ /^\d+$/) {
-                $totalSize += $size;
-                $splitsize += $size;
-            }
-
-            if($filecount == FILE_MAX_COUNT || $splitsize >= $AppConfig::backupsetMaxSize) {
-                $splitsize = 0;
-				if( !-e $pidPath) {
-					last;
-				}
-				if(!createRestoreSetFiles1k()){
-					# traceLog($errStr);
-					return REMOTE_SEARCH_THOUSANDS_FILES_SET_ERROR;
-				}
-			}
-		}
-	}
 	Common::traceLog($errStr) if($errStr);
 	return REMOTE_SEARCH_SUCCESS;
 }
@@ -745,76 +811,105 @@ STARTSEARCH:
 # Added By				  : Dhritikana
 #*****************************************************************************************************/
 sub generateRestoresetFiles {
+    my ($itemHash, %itemsStat);
+
 	#check if running for restore version pl, in that case no need of generate files.
 	if($RestoreFileName =~ m/versionRestore/) {
-		if(!open(RFILE, "<", $RestoreFileName)) {
-			my $errStr = "Couldn't open file $RestoreFileName to read, Reason: $!\n";
+		if(!open(RFILE, "<", $RestoreSetJsonFile)) {
+			my $errStr = "Couldn't open file $RestoreSetJsonFile to read, Reason: $!\n";
 			Common::traceLog($errStr);
 		}
 
-		my $Rdata = '';
-		while(<RFILE>) {
-			$Rdata .= $_;
+		my $versiondata = <RFILE>;
+        close(RFILE);
+        Common::Chomp(\$versiondata);
+        $itemHash = JSON::from_json($versiondata);
+# use Data::Dumper;
+# print Dumper(\$itemHash);
+        # print "opType:".$itemHash->{'opType'}."#\n";
+        # print "itemType:".$itemHash->{'itemType'}."#\n";
+        # print "itemSize:".$itemHash->{'itemSize'}."#\n";
+        # print "itemVer:".$itemHash->{'itemVer'}."#\n";
+        if($itemHash->{'opType'} eq 'fileVersioning') {
+# print "RestoreFileName:$RestoreFileName\n\n";
+            if(!open(WFILE, ">", $RestoreFileName)) {
+                my $errStr = "Couldn't open file $RestoreFileName to write, Reason: $!\n";
+                Common::traceLog($errStr);
+            }
+# my $name = keys $itemHash->{'items'}{1};
+			my $name = (keys %{$itemHash->{'items'}})[0];
+            print WFILE $name.'_IBVER'.$itemHash->{'items'}{$name}{'ver'}.$lineFeed;
+            close(WFILE);
+            $totalSize = $itemHash->{'items'}{$name}{'size'};
+# Common::traceLog("itemName::".$name.'_IBVER'.$itemHash->{'items'}{$name}{'ver'});
+# Common::traceLog("fileForSize:$fileForSize#itemSize:".$totalSize);
+            $totalFiles = 1;
+            $current_source = "/";
+            #print FD_WRITE "$RestoreFileName ".NORELATIVE." $current_source\n";
+            print FD_WRITE "$current_source' '".NORELATIVE."' '$RestoreFileName\n";
+            goto GENEND;
+        }
+		elsif($itemHash->{'opType'} eq 'folderVersioning') {
+			my $name = (keys %{$itemHash->{'items'}})[0];
+            $itemsStat{$name} = 'd';
+            # $AppConfig::versionToRestore = $itemHash->{'items'}{$name}{'ver'};
+			Common::fileWrite($RestoreFileName, '');
+            # startFolderSearchOperation($itemHash->{'itemName'}, $AppConfig::versionToRestore-1);
+        }
+		elsif($itemHash->{'opType'} eq 'snapshot') {
+			$AppConfig::versionToRestore = $itemHash->{'endDate'};
+			# my @variants = keys %{$itemHash->{'items'}};
+			foreach my $name (keys %{$itemHash->{'items'}}) {
+				$itemsStat{$name} = $itemHash->{'items'}{$name}{'type'};
+			}
+			Common::fileWrite($RestoreFileName, '');
 		}
-
-		($versionedFile, $totalSize) = split(/\n/, $Rdata);
-		close(RFILE);
-		if(!open(WFILE, ">", $RestoreFileName)) {
-			my $errStr = "Couldn't open file $RestoreFileName to write, Reason: $!\n";
-			Common::traceLog($errStr);
-		}
-		print WFILE $versionedFile.$lineFeed;
-		close(WFILE);
-        Common::fileWrite($fileForSize, $totalSize);
-
-		$totalFiles = 1;
-		$current_source = "/";
-		#print FD_WRITE "$RestoreFileName ".NORELATIVE." $current_source\n";
-		print FD_WRITE "$current_source' '".NORELATIVE."' '$RestoreFileName\n";
-		goto GENEND;
 	}
-	my $traceExist = $errorDir."/traceExist.txt";
-	if(!open(TRACEERRORFILE, ">>", $traceExist)) {
-		Common::traceLog(Constants->CONST->{'FileOpnErr'}." $traceExist, Reason: $!.");
-	}
-	chmod $filePermission, $traceExist;
 
-	$pidOperationFlag = "GenerateFile";
-	my @itemsStat = checkRestoreItem();
-	chomp(@itemsStat);
-	@itemsStat = uniqueData(@itemsStat);
-	my $checkItems = join (' ',@itemsStat);
+    my $traceExist = $errorDir."/traceExist.txt";
+    if(!open(TRACEERRORFILE, ">>", $traceExist)) {
+        Common::traceLog(Constants->CONST->{'FileOpnErr'}." $traceExist, Reason: $!.");
+    }
+    chmod $filePermission, $traceExist;
+
+    $pidOperationFlag = "GenerateFile";
+
+    %itemsStat = checkRestoreItem() if($RestoreFileName !~ m/versionRestore/);
 
 	$filesonlycount = 0;
 	my $j = 0;
 	my $idx = 0;
     my $splitsize = 0;
 
-	if($#itemsStat ge 1) {
-		chomp(@itemsStat);
-
+	if(scalar(keys %itemsStat) ge 1) {
 		if($dedup eq 'on'){
-			foreach my $tmpLine (@itemsStat) {
+			foreach my $itemName (keys %itemsStat) {
 				if( !-e $pidPath) {
 					last;
 				}
+# print "itemName:$itemName\n";
+                unless($itemsStat{$itemName}) {
+                    $totalFiles++;
+                    $nonExistsCount++;
+                    print TRACEERRORFILE "[".(localtime)."] [FAILED] [$itemName]. Reason: No such file or directory".$lineFeed;
+                    next;
 
-				if($tmpLine =~ /connection established/){
-					next;
-				}
-				#my ($key,$value) = split(/\="/, $tmpLine);
-				$tmpLine =~ s/\"\/\>//;
-				my @fields = split(/\="/, $tmpLine);
-				replaceXMLcharacters(\$fields[2]);
-				if($fields[1] =~ /directory exists/) {
+					#print "No such file or directory";
+					$totalFiles++;
+					$nonExistsCount++;
+					my $rfl = index($itemName, '/', 1);
+					my $mfile = (length($itemName) > 2)? substr($itemName, $rfl) : $itemName;
+					print TRACEERRORFILE "[".(localtime)."] [FAILED] [$mfile]. Reason: No such file or directory".$lineFeed;
+				    next;
+                } elsif(lc($itemsStat{$itemName}) eq 'd') {
 					#print "directory exists";
-					chop($fields[2]);
+					chop($itemName) if(substr($itemName, -1, 1) eq '/');
 					if($relative == 0) {
 						$noRelIndex++;
 						$RestoresetFile_new = $noRelativeFileset."$noRelIndex";
 						$filecount = 0;
-						$sourceIdx = rindex ($fields[2], '/');
-						$source[$noRelIndex] = substr($fields[2],0,$sourceIdx);
+						$sourceIdx = rindex ($itemName, '/');
+						$source[$noRelIndex] = substr($itemName,0,$sourceIdx);
 						if($source[$noRelIndex] eq "") {
 							$source[$noRelIndex] = "/";
 						}
@@ -827,18 +922,18 @@ sub generateRestoresetFiles {
 						chmod $filePermission, $RestoresetFile_new;
 					}
 					my $resEnumerate = 0;
-					$resEnumerate = enumerateRemote($fields[2]);
+					$resEnumerate = enumerateRemote($itemName);
 					if(!$resEnumerate){
-						Common::traceLog(qq($errStr $fields[2]));
+						Common::traceLog(qq($errStr $itemName));
 						goto GENEND;
 					}
 					elsif(REMOTE_SEARCH_CMD_ERROR == $resEnumerate or REMOTE_SEARCH_FAIL == $resEnumerate or REMOTE_SEARCH_OUTPUT_PARSE_FAIL == $resEnumerate){
-						my $searchErrMsg = "[".(localtime)."]". "[".$fields[2]."] Failed. Reason: Search has failed for the item.$lineFeed";
-						Common::traceLog("Search command failed due to syntax error for the folder ". $fields[2]);
+						my $searchErrMsg = "[".(localtime)."]". "[".$itemName."] Failed. Reason: Search has failed for the item.$lineFeed";
+						Common::traceLog("Search command failed due to syntax error for the folder ". $itemName);
 						appendErrorToUserLog($searchErrMsg);
 					}
 					elsif(REMOTE_SEARCH_THOUSANDS_FILES_SET_ERROR == $resEnumerate){
-						Common::traceLog("Error in creating 1k files ". $fields[2]);
+						Common::traceLog("Error in creating 1k files ". $itemName);
 						goto GENEND;
 					}
 
@@ -847,29 +942,35 @@ sub generateRestoresetFiles {
 						#print FD_WRITE "$RestoresetFile_new#".RELATIVE."#$current_source\n";
 						print FD_WRITE "$current_source' '".RELATIVE."' '$RestoresetFile_new\n";
 					}
-				} elsif($fields[1] =~ /file exists/) {
-					#print "file exists";
-					my $propertiesFile = getOperationFile(Constants->CONST->{'PropertiesOp'}, $fields[2]);
-					my $tmp_idevsutilBinaryPath = $idevsutilBinaryPath;
-					$tmp_idevsutilBinaryPath =~ s/\'/\'\\''/g;
-					my $tmp_propertiesFile = $propertiesFile;
-					$tmp_propertiesFile =~ s/\'/\'\\''/g;
+				} elsif(lc($itemsStat{$itemName}) eq 'f') {
+					my $size = 0;
+					if(exists $itemHash->{'items'}{$itemName}{'size'}) {
+						$size = $itemHash->{'items'}{$itemName}{'size'};
+						$itemName .= "_IBVER".$itemHash->{'items'}{$itemName}{'ver'} if(exists $itemHash->{'items'}{$itemName}{'ver'});
+					} else  {
+						#print "file exists";
+						my $propertiesFile = getOperationFile(Constants->CONST->{'PropertiesOp'}, $itemName);
+						my $tmp_idevsutilBinaryPath = $idevsutilBinaryPath;
+						$tmp_idevsutilBinaryPath =~ s/\'/\'\\''/g;
+						my $tmp_propertiesFile = $propertiesFile;
+						$tmp_propertiesFile =~ s/\'/\'\\''/g;
 
-					# EVS command to execute for properties
-					my $propertiesCmd = "\'$tmp_idevsutilBinaryPath\'".$whiteSpace.$idevsutilArgument.$assignmentOperator."\'$tmp_propertiesFile\'".$whiteSpace.$errorRedirection;
-					$propertiesCmd = Common::updateLocaleCmd($propertiesCmd);
-					my $commandOutput = `$propertiesCmd`;
-					# traceLog($commandOutput);
+						# EVS command to execute for properties
+						my $propertiesCmd = "\'$tmp_idevsutilBinaryPath\'".$whiteSpace.$idevsutilArgument.$assignmentOperator."\'$tmp_propertiesFile\'".$whiteSpace.$errorRedirection;
+						$propertiesCmd = Common::updateLocaleCmd($propertiesCmd);
+						my $commandOutput = `$propertiesCmd`;
+						# traceLog($commandOutput);
 
-					unlink $propertiesFile;
+						unlink $propertiesFile;
 
-					$commandOutput =~ m/(size)(.*)/;
-					my $size = $2;
-					$size =~ s/\D+//g;
+						$commandOutput =~ m/(size)(.*)/;
+						$size = $2;
+						$size =~ s/\D+//g;
+					}
 					$totalSize += $size;
                     $splitsize += $size;
 					$current_source = "/";
-					print RESTORE_FILE $fields[2].$lineFeed;
+					print RESTORE_FILE $itemName.$lineFeed;
 
 					if($relative == 0) {
 						$filesonlycount++;
@@ -888,75 +989,65 @@ sub generateRestoresetFiles {
 							goto GENEND;
 						}
 					}
-				} elsif ($fields[1] =~ /No such file or directory/) {
-					#print "No such file or directory";
-					$totalFiles++;
-					$nonExistsCount++;
-					my $rfl = index($fields[2], '/', 1);
-					my $mfile = (length($fields[2]) > 2)? substr($fields[2], $rfl) : $fields[2];
-					print TRACEERRORFILE "[".(localtime)."] [FAILED] [$mfile]. Reason: No such file or directory".$lineFeed;
-					next;
 				}
 			}
 		} else {
-			foreach my $tmpLine (@itemsStat) {
+			foreach my $itemName (keys %itemsStat) {
 				if( !-e $pidPath) {
 					last;
 				}
-				my @fields = split("\\] \\[", $tmpLine, SPLIT_LIMIT_ITEMS_OUTPUT);
-				my $total_fields = @fields;
-				if($total_fields == SPLIT_LIMIT_ITEMS_OUTPUT) {
 
-					$fields[0] =~ s/^.//; # remove starting character [ from first field
-					$fields[$fields_in_progress-1] =~ s/.$//; # remove last character ] from last field
-					$fields[0] =~ s/^\s+//; # remove spaces from beginning from required fields
-					$fields[1] =~ s/^\s+//;
-					if ($fields[1] eq "." or $fields[1] eq "..") {
-						next;
-					}
+                unless($itemsStat{$itemName}) {
+                    $totalFiles++;
+                    $nonExistsCount++;
+                    print TRACEERRORFILE "[".(localtime)."] [FAILED] [$itemName]. Reason: No such file or directory".$lineFeed;
+                    next;                  
+                } elsif(lc($itemsStat{$itemName}) eq 'd') {
+                    if($relative == 0) {
+                        $noRelIndex++;
+                        $RestoresetFile_new = $noRelativeFileset."$noRelIndex";
+                        $filecount = 0;
+                        $sourceIdx = rindex ($itemName, '/');
+                        $source[$noRelIndex] = substr($itemName,0,$sourceIdx);
+                        if($source[$noRelIndex] eq "") {
+                            $source[$noRelIndex] = "/";
+                        }
+                        $current_source = $source[$noRelIndex];
+                        if(!open $filehandle, ">>", $RestoresetFile_new){
+                            $errStr = "Unable to get list of files to restore.\n";
+                            Common::traceLog("cannot open $RestoresetFile_new to write ");
+                            goto GENEND;
+                        }
+                        chmod $filePermission, $RestoresetFile_new;
+                    }
+                    my $resEnumerate = 0;
+                    $resEnumerate = enumerateRemote($itemName);
+                    if(!$resEnumerate){
+                        Common::traceLog(qq($errStr $itemName));
+                        goto GENEND;
+                    }
+                    elsif(REMOTE_SEARCH_CMD_ERROR == $resEnumerate or REMOTE_SEARCH_FAIL == $resEnumerate or REMOTE_SEARCH_OUTPUT_PARSE_FAIL == $resEnumerate){
+                        my $searchErrMsg = "[".(localtime)."]". "[".$itemName."] Failed. Reason: Search has failed for the item.$lineFeed";
+                        Common::traceLog("Search command failed due to syntax error for the folder ". $itemName);
+                        appendErrorToUserLog($searchErrMsg);
+                    }
+                    elsif(REMOTE_SEARCH_THOUSANDS_FILES_SET_ERROR == $resEnumerate){
+                        Common::traceLog("Error in creating 1k files ". $itemName);
+                        goto GENEND;
+                    }
 
-					if($fields[0] =~ /directory exists/) {
-						chop($fields[1]);
-						if($relative == 0) {
-							$noRelIndex++;
-							$RestoresetFile_new = $noRelativeFileset."$noRelIndex";
-							$filecount = 0;
-							$sourceIdx = rindex ($fields[1], '/');
-							$source[$noRelIndex] = substr($fields[1],0,$sourceIdx);
-							if($source[$noRelIndex] eq "") {
-								$source[$noRelIndex] = "/";
-							}
-							$current_source = $source[$noRelIndex];
-							if(!open $filehandle, ">>", $RestoresetFile_new){
-								$errStr = "Unable to get list of files to restore.\n";
-        	                    Common::traceLog("cannot open $RestoresetFile_new to write ");
-	                            goto GENEND;
-							}
-							chmod $filePermission, $RestoresetFile_new;
-						}
-						my $resEnumerate = 0;
-						$resEnumerate = enumerateRemote($fields[1]);
-						if(!$resEnumerate){
-							Common::traceLog(qq($errStr $fields[1]));
-							goto GENEND;
-						}
-						elsif(REMOTE_SEARCH_CMD_ERROR == $resEnumerate or REMOTE_SEARCH_FAIL == $resEnumerate or REMOTE_SEARCH_OUTPUT_PARSE_FAIL == $resEnumerate){
-							my $searchErrMsg = "[".(localtime)."]". "[".$fields[1]."] Failed. Reason: Search has failed for the item.$lineFeed";
-							Common::traceLog("Search command failed due to syntax error for the folder ". $fields[1]);
-							appendErrorToUserLog($searchErrMsg);
-						}
-						elsif(REMOTE_SEARCH_THOUSANDS_FILES_SET_ERROR == $resEnumerate){
-							Common::traceLog("Error in creating 1k files ". $fields[1]);
-							goto GENEND;
-						}
-
-						if($relative == 0 && $filecount>0) {
-							autoflush FD_WRITE;
-							#print FD_WRITE "$RestoresetFile_new#".RELATIVE."#$current_source\n";
-							print FD_WRITE "$current_source' '".RELATIVE."' '$RestoresetFile_new\n";
-						}
-					} elsif($fields[0] =~ /file exists/) {
-						my $propertiesFile = getOperationFile(Constants->CONST->{'PropertiesOp'}, $fields[1]);
+                    if($relative == 0 && $filecount>0) {
+                        autoflush FD_WRITE;
+                        #print FD_WRITE "$RestoresetFile_new#".RELATIVE."#$current_source\n";
+                        print FD_WRITE "$current_source' '".RELATIVE."' '$RestoresetFile_new\n";
+                    }
+                } elsif(lc($itemsStat{$itemName}) eq 'f') {
+					my $size = 0;
+					if(exists $itemHash->{'items'}{$itemName}{'size'}) {
+						$size = $itemHash->{'items'}{$itemName}{'size'};
+						$itemName .= "_IBVER".$itemHash->{'items'}{$itemName}{'ver'} if(exists $itemHash->{'items'}{$itemName}{'ver'});
+					} else  {
+						my $propertiesFile = getOperationFile(Constants->CONST->{'PropertiesOp'}, $itemName);
 						my $tmp_idevsutilBinaryPath = $idevsutilBinaryPath;
 						$tmp_idevsutilBinaryPath =~ s/\'/\'\\''/g;
 						my $tmp_propertiesFile = $propertiesFile;
@@ -970,38 +1061,33 @@ sub generateRestoresetFiles {
 						unlink $propertiesFile;
 
 						$commandOutput =~ m/(size)(.*)/;
-						my $size = $2;
+						$size = $2;
 						$size =~ s/\D+//g;
-						$totalSize += $size;
-                        $splitsize += $size;
-
-						$current_source = "/";
-						print RESTORE_FILE $fields[1].$lineFeed;
-
-						if($relative == 0) {
-							$filesonlycount++;
-							$filecount = $filesonlycount;
-						}
-						else {
-							$filecount++;
-						}
-
-						$totalFiles++;
-
-						if($filecount == FILE_MAX_COUNT || $splitsize >= $AppConfig::backupsetMaxSize) {
-							$filesonlycount = 0;
-                            $splitsize = 0;
-							if(!createRestoreSetFiles1k("FILESONLY")){
-								goto GENEND;
-							}
-						}
-					} elsif ($fields[0] =~ /No such file or directory/) {
-						$totalFiles++;
-						$nonExistsCount++;
-						print TRACEERRORFILE "[".(localtime)."] [FAILED] [$fields[1]]. Reason: No such file or directory".$lineFeed;
-						next;
 					}
-				}
+                    $totalSize += $size;
+                    $splitsize += $size;
+
+                    $current_source = "/";
+                    print RESTORE_FILE $itemName.$lineFeed;
+
+                    if($relative == 0) {
+                        $filesonlycount++;
+                        $filecount = $filesonlycount;
+                    }
+                    else {
+                        $filecount++;
+                    }
+
+                    $totalFiles++;
+
+                    if($filecount == FILE_MAX_COUNT || $splitsize >= $AppConfig::backupsetMaxSize) {
+                        $filesonlycount = 0;
+                        $splitsize = 0;
+                        if(!createRestoreSetFiles1k("FILESONLY")){
+                            goto GENEND;
+                        }
+                    }
+                }				
 			}
 		}
 	}
@@ -1034,7 +1120,8 @@ sub generateRestoresetFiles {
 
 	$pidOperationFlag = "generateListFinish";
 	close(TRACEERRORFILE);
-	Common::fileWrite($totalFileCountFile,$totalFiles);
+	# Common::fileWrite($totalFileCountFile,$totalFiles);
+	Common::loadAndWriteAsJSON($totalFileCountFile, {$AppConfig::totalFileKey => $totalFiles});
 	chmod $filePermission, $totalFileCountFile;	
 	exit 0;
 }
@@ -1213,8 +1300,9 @@ sub doRestoreOperation {
 	$tmpRestoreLoc =~ s/\'/\'\\''/g;
 	my $param = join ("\n",('RESTORE_OPERATION',$tmpOpFilePath,$tmpRstSetFile,$parameter_list[1],$tmpSrc,$progressSizeOp,$tmpRestoreHost,$tmpRestoreLoc,$silentFlag,'',$scheduleFlag));
 	writeParamToFile("$tmpJobRngDir/operationsfile.txt_" . $operationEngineId, $param);
-	$cmd = "cd \'$workingDir\'; $perlPath \'$fileChildProcessPath\' \'$tmpJobRngDir\' \'$userName\' \'$operationEngineId\' \'$retry_failedfiles_index\'";
+	$cmd = "cd \'$workingDir\'; $perlPath \'$fileChildProcessPath\' \'$tmpJobRngDir\' \'$userName\' \'$operationEngineId\' \'$retry_failedfiles_index\' \'$AppConfig::versionToRestore\'";
 	$cmd = Common::updateLocaleCmd("$cmd 2>/dev/null &");
+
 	system($cmd);
 
 	waitpid($restorePid,0) if($restorePid);
@@ -1282,7 +1370,7 @@ sub process_term {
 #							It should then generate the restore summary report, append the contents of the
 #							error file to the output file and delete the error file.
 # Added By				  	: Arnab Gupta
-# Modified By				: Dhritikana, Sabin Cheurvattil
+# Modified By				: Dhritikana, Sabin Cheurvattil, Senthil Pandian
 #************************************************************************************************************
 sub cancelSubRoutine {
 	if($pidOperationFlag eq "GenerateFile")  {
@@ -1301,8 +1389,10 @@ sub cancelSubRoutine {
 
 	if($pidOperationFlag eq "main") {
 		Common::sendFailureNotice($userName, 'update_restore_progress', $taskType);
-
-		my $evsCmd = "ps $psOption | grep \"$idevsutilBinaryName\" | grep \'$jobRunningDir\'";
+		my $tempJobRunningDir = $jobRunningDir;
+		$tempJobRunningDir =~ s/\[/\\[/;
+		$tempJobRunningDir =~ s/{/[{]/;
+		my $evsCmd = "ps $psOption | grep \"$idevsutilBinaryName\" | grep \'$tempJobRunningDir\'";
 		$evsCmd = Common::updateLocaleCmd($evsCmd);
 		$evsRunning = `$evsCmd`;
 		@evsRunningArr = split("\n", $evsRunning);
@@ -1347,7 +1437,7 @@ sub cancelSubRoutine {
 # Subroutine Name         : exit_cleanup.
 # Objective               : This function will execute the major functions required at the time of exit
 # Added By                : Deepak Chaurasia
-# Modified By 		  : Dhritikana
+# Modified By 		  	  : Dhritikana, Sabin Cheruvattil
 #*****************************************************************************************************/
 sub exit_cleanup {
     $pidOperationFlag = 'ExitCleanup';
@@ -1409,18 +1499,19 @@ sub exit_cleanup {
 	waitpid($displayProgressBarPid,0);
 	wait();
 	writeOperationSummary(Constants->CONST->{'RestoreOp'}, $cancelFlag, $transferredFileSize);
-    Common::removeItems([$fileForSize, $trfSizeAndCountFile, $retryinfo, $RestoreItemCheck, $jobCancelFile, $evsTempDirPath, $search, $errorDir]);
+    Common::removeItems([$fileForSize, $trfSizeAndCountFile, $retryinfo, $RestoreItemCheck, $jobCancelFile, $search, $errorDir]);
 	restoreRestoresetFileConfiguration();
 
 	my ($subjectLine) = getOpStatusNeSubLine();
-	if (-e $outputFilePath and -s $outputFilePath > 0){
+	if ((-f $outputFilePath) and (!-z $outputFilePath)){
 		my $finalOutFile = $outputFilePath;
 		$finalOutFile =~ s/_Running_/_$status\_/;
 		move($outputFilePath, $finalOutFile);
 
-		if (Common::loadNotifications()) {
+		if (Common::loadNotifications() and Common::lockCriticalUpdate("notification")) {
 			Common::setNotification('update_restore_progress', ((split("/", $finalOutFile))[-1]));
 			Common::setNotification('get_logs') and Common::saveNotifications();
+			Common::unlockCriticalUpdate("notification");
 		}
 
 		$outputFilePath = $finalOutFile;
@@ -1450,7 +1541,7 @@ sub exit_cleanup {
 	$operationsfile = $jobRunningDir.'/operationsfile.txt';
 	my $doBackupOperationErrorFile = "$jobRunningDir/doBackuperror.txt_";
 	# unlink($totalFileCountFile);
-	Common::removeItems([$info_file, $idevsErrorFile."*", $idevsOutputFile,"*", $statusFilePath."*", $utf8Files."*", $operationsfile."*", $doBackupOperationErrorFile."*", $RestoresetFile_relative."*", $noRelativeFileset."*", $filesOnly."*", $pidPath."*" ]);
+	Common::removeItems([$info_file, $idevsErrorFile."*", $idevsOutputFile,"*", $statusFilePath."*", $utf8Files."*", $operationsfile."*", $doBackupOperationErrorFile."*", $RestoresetFile_relative."*", $noRelativeFileset."*", $filesOnly."*", $pidPath."*", $RestoreSetJsonFile ]);
 	unlink($engineLockFile);
 	exit 0;
 }
@@ -1462,17 +1553,17 @@ sub exit_cleanup {
 # # Modified By           : Yogesh Kumar
 #******************************************************************************************************************/
 sub getOpStatusNeSubLine {
-	my $subjectLine= "";
+	my $subjectLine= "$taskType Restore Status Report ";
 	my $totalNumFiles = $filesConsideredCount-$failedFilesCount;
 
 	if ($status eq "Aborted") {
-		$subjectLine = "$taskType Restore Status Report "."[$userName]"."[Aborted Restore]";
+		$subjectLine .= sprintf("[%s][Aborted Restore]", Common::getUserConfiguration('EMAILADDRESS'));
 	}
 	elsif ($failedFilesCount == 0 and $filesConsideredCount > 0) {
-		$subjectLine = "$taskType Restore Status Report "."[$userName]"."[Successful Restore]";
+		$subjectLine .= sprintf("[%s][Successful Restore]", Common::getUserConfiguration('EMAILADDRESS'));
 	}
 	else {
-		$subjectLine = "$taskType Restore Status Report "."[$userName]"."[Failed Restore]";
+		$subjectLine .= sprintf("[%s][Failed Restore]", Common::getUserConfiguration('EMAILADDRESS'));
 	}
 	return ($subjectLine);
 }
@@ -1517,12 +1608,16 @@ sub updateServerAddr {
 		$errorContent = <EVSERROR>;
 		close EVSERROR;
 		if($errorContent =~ m/$errorPatternServerAddr/){
-			if (!(getServerAddr())){
-				Common::updateAccountStatus(Common::getUsername(), 'UA');
-				exit_cleanup($errStr);
-				return 1;
+			# if (!(getServerAddr())){
+				# Common::updateAccountStatus(Common::getUsername(), 'UA');
+				# exit_cleanup($errStr);
+				# return 1;
+			# }
+			
+			if(Common::saveServerAddress(Common::fetchServerAddress())) {
+				Common::loadServerAddress();
+				return 0;
 			}
-			return 0;
 		}
 	}
 	return 1;
@@ -1675,10 +1770,10 @@ sub displayRestoreProgress {
     my $keyPressEvent = Common::catchPressedKey();
     $pidOperationFlag = "DisplayProgress";
     my $temp = $totalEngineBackup;
-    # our ($cumulativeCount, $cumulativeTransRate) = (0)x2;
-    my $moreOrLess    = 'less';
     my $redrawForLess = 0;
     my $vrestsize	  = 0;
+    my $moreOrLess    = 'less';
+    $moreOrLess = 'more' if(Common::checkScreeSize());
 
     while(1){
         Common::displayProgressBar($progressDetailsFile, undef, undef, $moreOrLess, $redrawForLess);
@@ -1730,4 +1825,62 @@ sub displayRestoreProgress {
     $AppConfig::pressedKeyValue = '';			
     # displayProgressBar($progressDetailsFile, undef, undef, $moreOrLess, $redrawForLess);
     Common::displayProgressBar($progressDetailsFile,undef,undef,$moreOrLess,$redrawForLess)  if($playPause ne 'paused' || $drawForPlayPause);
+}
+
+#*****************************************************************************************************
+# Subroutine	: displayFolderVersionRestoreProgress
+# In Param		: UNDEF
+# Out Param		: UNDEF
+# Objective		: Reads the input and processes the input
+# Added By		: Senthil Pandian
+#*****************************************************************************************************
+sub displayFolderVersionRestoreProgress {
+    my $keyPressEvent = Common::catchPressedKey();
+    $pidOperationFlag = "DisplayProgress";
+    my $temp = $totalEngineBackup;
+    # our ($cumulativeCount, $cumulativeTransRate) = (0)x2;
+    my $redrawForLess = 0;
+    my $vrestsize	  = 0;
+    my $moreOrLess    = 'less';
+    $moreOrLess = 'more' if(Common::checkScreeSize());
+
+    while(1){
+        Common::displayFolderVersionProgressBar($progressDetailsFile, undef, undef, $moreOrLess, $redrawForLess);
+        $redrawForLess = 0;
+        last if(!-e $pidPath);
+
+        #select(undef, undef, undef, 0.100);
+        Common::sleepForMilliSec($AppConfig::sleepTimeForProgress);# Sleep for 100/500 milliseconds
+        if($keyPressEvent->(1)) {
+            if(($moreOrLess eq 'more') && ($AppConfig::pressedKeyValue eq '-')) {
+                $moreOrLess = 'less';
+                $redrawForLess = 1;
+                $AppConfig::prevProgressStrLen = 10000;
+                # Common::clearScreenAndResetCurPos();
+            } elsif(($moreOrLess eq 'less') && ($AppConfig::pressedKeyValue eq '+')) {
+                $moreOrLess = 'more' if(Common::checkScreeSize());
+                $AppConfig::prevProgressStrLen = 10000;
+                # Common::clearScreenAndResetCurPos();
+            }
+        }
+    }
+
+    $keyPressEvent->(0);
+    $AppConfig::pressedKeyValue = '';			
+    # displayProgressBar($progressDetailsFile, undef, undef, $moreOrLess, $redrawForLess);
+    Common::displayFolderVersionProgressBar($progressDetailsFile,undef,undef,$moreOrLess,$redrawForLess)  if($playPause ne 'paused' || $drawForPlayPause);
+}
+
+#*****************************************************************************************************
+# Subroutine	: getSnapshotSearchResult
+# In Param		: item, endDate
+# Out Param		: 
+# Objective		: Start snapshot search operation
+# Added By		: Senthil Pandian
+# Modified By	: 
+#*****************************************************************************************************
+sub getSnapshotSearchResult {
+	my $item    = $_[0];
+	my $endDate = $_[1];
+	
 }

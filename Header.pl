@@ -101,7 +101,7 @@ our $errorDevNull = '2>/dev/null';
 our $serverName = "home";
 our $failedFileName = "failedfiles.txt";
 our $retryinfo = "RetryInfo.txt";
-our ($curLines, $cols, $nonExistsCount, $missingCount, $noPermissionCount, $transferredFileSize) = (0) x 6;
+our ($curLines, $cols, $nonExistsCount, $missingCount, $noPermissionCount, $transferredFileSize, $completedFileSize) = (0) x 7;
 our $psOption = "-elf";
 our $machineInfo;
 my $freebsdProgress = "";
@@ -144,26 +144,29 @@ our $outputFilePath = undef;
 our $errorFilePath = undef;
 our $taskType = undef;
 our $status = undef;
-our %statusHash = 	(	"COUNT_FILES_INDEX" => undef,
-						"SYNC_COUNT_FILES_INDEX" => undef,
-						"ERROR_COUNT_FILES" => undef,
-						"FAILEDFILES_LISTIDX" => undef,
-						"DENIED_COUNT_FILES" => undef,
-						"MISSED_FILES_COUNT" => undef,
-                        "MODIFIED_FILES_COUNT" => undef,
-						"TOTAL_TRANSFERRED_SIZE" => undef,
-						"EXIT_FLAG" => undef,
-					);
-our %statusFinalHash = 	(	"COUNT_FILES_INDEX" => undef,
-						"SYNC_COUNT_FILES_INDEX" => undef,
-						"ERROR_COUNT_FILES" => undef,
-						"FAILEDFILES_LISTIDX" => undef,
-						"DENIED_COUNT_FILES" => undef,
-						"MISSED_FILES_COUNT" => undef,
-                        "MODIFIED_FILES_COUNT" => undef,
-						"TOTAL_TRANSFERRED_SIZE" => undef,
-						"EXIT_FLAG" => undef,
-					);
+our %statusHash = (
+	"COUNT_FILES_INDEX" => undef,
+	"SYNC_COUNT_FILES_INDEX" => undef,
+	"ERROR_COUNT_FILES" => undef,
+	"FAILEDFILES_LISTIDX" => undef,
+	"DENIED_COUNT_FILES" => undef,
+	"MISSED_FILES_COUNT" => undef,
+	"MODIFIED_FILES_COUNT" => undef,
+	"TOTAL_TRANSFERRED_SIZE" => undef,
+	"EXIT_FLAG" => undef,
+);
+
+our %statusFinalHash = (
+	"COUNT_FILES_INDEX" => undef,
+	"SYNC_COUNT_FILES_INDEX" => undef,
+	"ERROR_COUNT_FILES" => undef,
+	"FAILEDFILES_LISTIDX" => undef,
+	"DENIED_COUNT_FILES" => undef,
+	"MISSED_FILES_COUNT" => undef,
+	"MODIFIED_FILES_COUNT" => undef,
+	"TOTAL_TRANSFERRED_SIZE" => undef,
+	"EXIT_FLAG" => undef,
+);
 
 our $totalFiles = 0;
 our $filesConsideredCount = undef;
@@ -437,6 +440,7 @@ sub loadUserData {
 	our $bwThrottle = getThrottleVal();
 	our $restoreLocation = Common::getUserConfiguration('RESTORELOCATION');
 	$restoreLocation = checkLocationInput($restoreLocation);
+	$restoreLocation .= '/' if(substr($restoreLocation, -1, 1) ne '/');
 	#$restoreLocation =~ s/^\/+$|^\s+\/+$//g; ## Removing if only "/"(s) to avoid root
 	#our $ifRetainLogs = Common::getUserConfiguration('RETAINLOGS');
 	our $backupPathType = Common::getUserConfiguration('BACKUPTYPE');
@@ -786,10 +790,22 @@ sub getServerAddr {
 	my $res = Common::makeRequest(12);
 	if(defined($res->{DATA})) {
 		%evsServerHashOutput = parseXMLOutput(\$res->{DATA});
-		$addrMessage   = $evsServerHashOutput{'message'};
+		my $hashref = (keys(%evsServerHashOutput))[0];
+		my %servdata = ();
+		eval {
+			%servdata	= %{JSON::from_json($hashref)};
+			1;
+		} or do {
+			%servdata	= ();
+		};
+
+		if(exists($servdata{'server'}) and exists($servdata{'server'}{'cmdUtilityServerIP'}) and $servdata{'server'}{'cmdUtilityServerIP'}) {
+			$serverAddress = $servdata{'server'}{'cmdUtilityServerIP'};
+		}
+		# $addrMessage   = $evsServerHashOutput{'message'};
 		#$serverAddress = $evsServerHashOutput{'cmdUtilityServerIP'};
-		$serverAddress = $evsServerHashOutput{'evssrvrip'};
-		$desc = $evsServerHashOutput{'desc'};	
+		# $serverAddress = $evsServerHashOutput{'evssrvrip'};
+		# $desc = $evsServerHashOutput{'desc'};	
 	} else {
 		return 0;
 	}
@@ -1164,6 +1180,7 @@ sub getOperationFile
 		if($dedup eq 'on'){
 			$relativeAsPerOperation = RELATIVE;
 		}
+		$backupLocation .= $pathSeparator if($backupLocation and substr($backupLocation,-1,1) ne $pathSeparator); #Adding '/' at end if not
 
 		$utfPath = $utfPath."_".$operationEngineId;
 		#open UTF8FILE, ">", $utfPath or (print $tHandle CONST->{'FileOpnErr'}.$utfPath." for backup, Reason:$!" and return 0);
@@ -1195,7 +1212,11 @@ sub getOperationFile
 		my $relativeAsPerOperation = $_[2];
 		my $source = $_[3];
 		my $operationEngineId = $_[4];
-		my $encryptionType = $encType;
+		my $encryptionType  = $encType;
+		my $restoreLocation = Common::getUserConfiguration('RESTORELOCATION');
+
+		$source           .= $pathSeparator if(substr($source,-1,1) ne $pathSeparator); #Adding '/' at end if its not
+		$restoreLocation  .= $pathSeparator if(substr($restoreLocation,-1,1) ne $pathSeparator); #Adding '/' at end if its not
 
 	   $utfPath = $utfPath."_".$operationEngineId;
 	   open UTF8FILE, ">", $utfPath or ($errStr = Constants->CONST->{'FileOpnErr'}.$utfPath." for restore, Reason:$!" and return 0);
@@ -2224,8 +2245,9 @@ sub writeLogHeader {
             $cdplog .= Common::getStringConstant('title_machine_name')."$host] $lineFeed";
             $cdplog	.= (('=') x 100). "\n\n";            
         }
+
         if(-z $outputFilePath or Common::getUserConfiguration('EXCLUDESETUPDATED')) {
-            $cdplog	.= Common::getExcludeSetSummary($jt,$iscdp);
+			$cdplog	.= Common::getExcludeSetSummary($jt, $iscdp);
             $cdplog	.= (('=') x 100). "\n\n";
             Common::setUserConfiguration('EXCLUDESETUPDATED', 0);
             Common::saveUserConfiguration();
@@ -2241,9 +2263,10 @@ sub writeLogHeader {
 
     my ($jsc, $exclsum, $mailHead) = ('') x 3;
 	if($tempJobType eq "Restore") {
+		my $location = Common::getUserConfiguration('RESTORELOCATION');
 		my $fromLocation = ($dedup eq 'on' and $restoreHost =~ /#/)?(split('#',$restoreHost))[1]:$restoreHost;
         $mailHead .= "[".Common::getStringConstant('restore_location_progress').": $location]".$lineFeed;
-		$mailHead .= "[$tempJobType From Location: $fromLocation]";
+		$mailHead .= "[$tempJobType From Location: $fromLocation] ";
 
 		#Ignoring if version restore
 		if($_[1] ne Constants->CONST->{'VersionOp'}) {
@@ -2253,10 +2276,38 @@ sub writeLogHeader {
 		} else {
             my $restoreFileName = Common::getCatfile($AppConfig::jobRunningDir, $AppConfig::versionRestoreFile);
             my $data = Common::getFileContents($restoreFileName);
-            my $versionedFile = (split(/\n/, $data))[0];
-            my $version = (split(/_IBVER/, $versionedFile))[1];
-			$mailHead .= " [".Common::getStringConstant('version_to_restore').$version."]";
-            # $jsc .= "[VERSION RESTORE]\n\n";
+            my %fileInfo	= %{JSON::from_json($data)};
+			if($fileInfo{'opType'} eq 'snapshot') {
+				my ($fileList, $folderList)  = ('') x 2;
+				$AppConfig::versionToRestore = $fileInfo{'endDate'};
+				foreach my $itemName (keys %{$fileInfo{'items'}}) {
+					if(lc($fileInfo{'items'}{$itemName}{'type'}) eq 'f') {
+						$fileList .= $itemName.$lineFeed;
+					} else {
+						$folderList .= $itemName.$lineFeed;
+					}
+				}
+				my $version = $fileInfo{'endDate'};
+				$version =~ s/000432//;
+				$version = Common::strftime("%m/%d/%Y %H:%M:%S", localtime($version));
+				$mailHead .= "[Operation: Snapshot] [Backed up on or before: $version]";
+				$jsc .= "[RESTORE SET CONTENT]\n";
+				$jsc .= (('-') x 21). "\n";
+				$jsc .= (($fileList ne '')? "[Files]\n" . $fileList."\n" : '');
+				$jsc .= (($folderList ne '')? "[Directories]\n" . $folderList."\n" : '');
+			} else {
+				my $item    = (keys %{$fileInfo{'items'}})[0];
+				my $version = $fileInfo{'items'}{$item}{'ver'};
+				$AppConfig::versionToRestore = $version;
+
+				my $type = 'File';
+				if($fileInfo{'opType'} eq 'folderVersioning') {
+					$version = Common::getStringConstant($version.'_most_recent');
+					$type = 'Directory';
+				}
+				$mailHead .= $lineFeed;
+				$mailHead .= "[Operation: Restore Version] [Type: $type] [Name: $item] [Version To Restore: $version]";
+			}
 		}
         $mailHead .= $lineFeed.$lineFeed;
         $mailHead .= "$tempJobType Scheduled Time: " . Common::getCRONScheduleTime($AppConfig::mcUser, $userName, lc($tempJobType), $jobname).$lineFeed if($taskType ne "Manual");
@@ -2265,7 +2316,7 @@ sub writeLogHeader {
 	else {
 		$mailHead .= "[Failed files(%): $percentToNotifyForFailedFiles] ";
 		$mailHead .= "[Missing files(%): $percentToNotifyForMissedFiles] ";
-        $mailHead .= "[" . Common::getStringConstant('title_machine_name')."$host] $lineFeed";
+        $mailHead .= "[" . Common::getStringConstant('title_machine_name')." $host] $lineFeed";
         $mailHead .= "[".Common::getStringConstant('backup_location_progress').": $location] ";
 		$mailHead .= "[Show hidden files/folders: ".(Common::getUserConfiguration('SHOWHIDDEN')? 'enabled' : 'disabled')."] ";
 		$mailHead .= ($jobType eq "Backup")?"[Throttle Value(%): $bwThrottle] $lineFeed":$lineFeed;
@@ -2355,7 +2406,7 @@ sub writeCDPBackupsetToLog {
 # Subroutine Name         :	writeOperationSummary
 # Objective               :	This subroutine writes the restore summary to the output file.
 # Added By                :
-# Modified By             : Yogesh Kumar, Vijay Vinoth, Sabin Cheruvattil
+# Modified By             : Yogesh Kumar, Vijay Vinoth, Sabin Cheruvattil, Senthil Pandian
 #******************************************************************************************
 sub writeOperationSummary {
 	my $infoFile 		= "$jobRunningDir/info_file";
@@ -2368,7 +2419,7 @@ sub writeOperationSummary {
 	chmod $filePermission, $outputFilePath;
 	$summary = '';
 	$status  = "Aborted";
-	if (-e $outputFilePath and -s $outputFilePath > 0){# If $outputFilePath exists then only summary will be written otherwise no summary file will exists.
+	if ((-e $outputFilePath) and (!-z $outputFilePath)){# If $outputFilePath exists then only summary will be written otherwise no summary file will exists.
 		# open output.txt file to write restore summary.
 		if (!open(OUTFILE, ">> $outputFilePath")){
 			Common::traceLog(Constants->CONST->{'FileOpnErr'} . $outputFilePath.", Reason:$!");
@@ -2549,6 +2600,8 @@ sub writeOperationSummary {
 				elsif ($status =~ m/^S/) {
 					$bs = 'S';
 				}
+
+				# backup summary update
 				my $bkp = Common::getUserConfiguration('BACKUPLOCATION');
 				$bkp = (split("#", $bkp))[1] if (Common::getUserConfiguration('DEDUP') eq 'on');
 				Common::makeRequest(5, [
@@ -2557,7 +2610,7 @@ sub writeOperationSummary {
 					($taskType eq 'Manual') ? '1' : '2',
 					$fs,
 					strftime("%y-%m-%d %H:%M:%S", localtime(mktime(@endTime))),
-					$bkp,
+					$AppConfig::hostname,
 					$filesConsideredCount,
 					$successFiles,
 					$failedFilesCount,
@@ -2574,7 +2627,11 @@ sub writeOperationSummary {
 		$AppConfig::mailContent .= $mail_summary;
 		print OUTFILE $summary;
 		close OUTFILE;
-	}
+	} else {
+		# Added to debug Harish_1.0.2_2_5 : Senthil
+		Common::traceLog("writeOperationSummary outputFilePath:$outputFilePath");
+		Common::traceLog("writeOperationSummary SIZE:".(-s $outputFilePath));
+	}	
 }
 
 #*******************************************************************************************
@@ -2909,7 +2966,11 @@ sub emptyLocationsQueries {
 		Common::setUserConfiguration('BACKUPLOCATION', $backupHost);
 		Common::setUserConfiguration('SERVERROOT', $serverRoot);
 
-		Common::loadNotifications() and Common::setNotification('register_dashboard') and Common::saveNotifications();
+		if(Common::loadNotifications() and Common::lockCriticalUpdate("notification")) {
+			Common::setNotification('register_dashboard') and Common::saveNotifications();
+			Common::unlockCriticalUpdate("notification");
+		}
+
 		unless($backupHost eq $tmpBackupHost) {
 			Common::createBackupStatRenewalByJob('backup') if(Common::getUsername() ne '' && Common::getLoggedInUsername() eq Common::getUsername());
 			Common::setBackupLocationSize();
@@ -4045,46 +4106,55 @@ sub getQuotaForAccountSettings
 # Modified By            : Senthil Pandian, Sabin Cheruvattil, Yogesh Kumar
 #****************************************************************************/
 sub getQuota{
-	#my $encType = checkEncType(1);
+	my $csf = Common::getCachedStorageFile();
+	unlink($csf);
+
+	my @result;
+ 
     my $planSpecial = Common::getUserConfiguration('PLANSPECIAL');
     if($planSpecial ne '' and $planSpecial =~ /business/i) {
-        my $uname = Common::getUsername();
-        my $upswd = &Common::getPdata($uname);
-        my $encType = Common::getUserConfiguration('ENCRYPTIONTYPE');
-        my @responseData;
-        my $errStr = '';
+        # my $uname = Common::getUsername();
+        # my $upswd = &Common::getPdata($uname);
+        # my $encType = Common::getUserConfiguration('ENCRYPTIONTYPE');
+        # my @responseData;
+        # my $errStr = '';
 
         my $res = Common::makeRequest(12);
         if ($res) {
-            @responseData = Common::parseEVSCmdOutput($res->{DATA}, 'login', 1);
-            if ($responseData[0]->{'STATUS'} eq 'SUCCESS') {
-                Common::saveUserQuota(@responseData)
-            }
+            @result = Common::parseEVSCmdOutput($res->{DATA}, 'login', 1);
         }
+    } else {
+		Common::createUTF8File('GETQUOTA') or Common::retreat('failed_to_create_utf8_file');
+		@result = Common::runEVS('tree');
+		if (exists $result[0]->{'message'}) {
+			if ($result[0]->{'message'} eq 'ERROR') {
+				Common::traceLog($result[0]->{'MSG'}) if(exists $result[0]->{'MSG'});
+				Common::display('unable_to_retrieve_the_quota');
+				return 0;
+			}
+		}
     }
-    else {
-        my %evsQuotaHashOutput;
-        my $webAPI = Common::getUserConfiguration('WEBAPI');
-        my $res = Common::makeRequest(9, [
-            $webAPI,
-        ]);
-        if(defined($res->{DATA})) {
-            %evsQuotaHashOutput = parseXMLOutput(\$res->{DATA});
-            if($evsQuotaHashOutput{'message'} eq 'ERROR') {
-                Common::checkAndUpdateAccStatError($userName, $evsQuotaHashOutput{'desc'});
-                Common::retreat($LS{'failed_to_fetch_quota'}.ucfirst($evsQuotaHashOutput{'desc'}));
-            }
-        }
 
-        if (($evsQuotaHashOutput{"message"} eq 'SUCCESS') and ($evsQuotaHashOutput{"totalquota"} =~/\d+/) and ($evsQuotaHashOutput{"usedquota"} =~/\d+/)){
-            open (AQ,'>',$usrProfileDir.'/.quota.txt') or (Common::traceLog(Constants->CONST->{'FileCrtErr'} . $enPwdPath . "failed reason: $!") and die);# File handler AQ means Account Quota.
-            chmod $filePermission,$usrProfileDir.'/.quota.txt';
-            $evsQuotaHashOutput{"usedquota"} =~ s/(\d+)\".*/$1/isg;
-            print AQ "totalQuota=".$evsQuotaHashOutput{"totalquota"}."\n";
-            print AQ "usedQuota=".$evsQuotaHashOutput{"usedquota"}."\n";
-            close AQ;
-        }
-    }
+	unless (@result) {
+		Common::traceLog('unable_to_cache_the_quota',".");
+		Common::display('unable_to_retrieve_the_quota');
+		return 0;
+	}
+
+	if (exists $result[0]->{'message'} && $result[0]->{'message'} eq 'ERROR') {
+		Common::checkAndUpdateAccStatError(Common::getUsername(), $result[0]->{'desc'});
+		Common::traceLog('unable_to_cache_the_quota',". ".ucfirst($result[0]->{'desc'}));
+		Common::display('unable_to_retrieve_the_quota');
+		return 0;
+	}
+
+	if (Common::saveUserQuota(@result)) {
+		return 1 if (Common::loadStorageSize());
+	}
+
+	Common::traceLog('unable_to_cache_the_quota');
+	# Common::display('unable_to_cache_the_quota');
+	return 0;
 }
 
 #*****************************************************************************************************

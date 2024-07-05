@@ -14,8 +14,15 @@ use File::Path;
 use File::Basename;
 use Time::Local;
 
-my ($lastVersion, $fullFilePath) = (30, '');
+
+my ($lastVersion, $fullFilePath, $versionRestoreType) = ($AppConfig::maxFileVersion, '', '');
 tie(my %mainMenuOptions, 'Tie::IxHash', '1' => 'display_versions_for_your_file', '2' => 'restore_a_specific_version_of_your_file');
+
+my $errorMessageHandler = {
+                            Common::getStringConstant('no_version_found') => '"'.Common::getStringConstant('no_version_found_for_given_file').'."',
+                            Common::getStringConstant('path_not_found') => '"'.Common::getStringConstant('could_not_find_given_file').'."',
+                            'cleanupOperation' => sub {Common::display(['exiting_title']); exit(0);}
+                        };
 
 Common::waitForUpdate();
 Common::initiateMigrate();
@@ -67,7 +74,7 @@ sub init {
 		}
 	}
 
-	createRestoresetFile(\@parsedVersionData);
+	createRestoresetFile(\@parsedVersionData, $userMainChoice);
 	sleep(2);
 
 	restoreVersion();
@@ -90,7 +97,7 @@ sub editVersionRestoreFromLocation {
 # Added By				: Dhritikana Kalita.
 #********************************************************************************
 sub restoreVersion {
-	my $restoreRunCommand = qq(perl ') . Common::getAppPath() . qq(/$AppConfig::idriveScripts{'restore_script'}' 2);
+	my $restoreRunCommand = qq($AppConfig::perlBin ') . Common::getAppPath() . qq(/$AppConfig::idriveScripts{'restore_script'}' 2);
 	$restoreRunCommand = Common::updateLocaleCmd($restoreRunCommand);
 	system($restoreRunCommand);
 }
@@ -106,6 +113,16 @@ sub createRestoresetFile {
 	Common::display(["\n", 'provide_the_version_no_for_file', '.']);
 	my $versionNo = Common::getUserMenuChoice($lastVersion);
 
+	#When option 2 selected
+	if($_[1] == 2) {
+		Common::display(["\n", 'checking_version_for_file', '...']);
+		@parsedVersionData = getFileVersions();
+		unless(scalar @parsedVersionData > 0 && $parsedVersionData[(($versionNo * 3)-2)]) {
+			Common::display('Provided version number not found for the file.');
+			Common::retreat('exiting_title');
+		}
+		Common::display('Version found');
+	}
 	Common::display('');
 
 	# If the restore location is changed, it must be acknowledged to user before restore script clear the screen. So adding a wait of 2 sec.
@@ -124,13 +141,13 @@ sub createRestoresetFile {
 	my $fileVersionSize = (scalar @parsedVersionData > 0)? $parsedVersionData[(($versionNo * 3)-1)] : '';
 	$fileVersionSize = '' unless $fileVersionSize;
 
-	my $jobRunningDir  = Common::getJobsPath('restore');
-	my $restoresetFile = qq($jobRunningDir/$AppConfig::versionRestoreFile);
-	open(FILE, ">", $restoresetFile) or Common::traceLog(['couldnt_open', " $restoresetFile ", 'for_restore_version_option', 'reason', ": $!"]);
-	chmod $AppConfig::filePermission, $restoresetFile;
-	print FILE $fullFilePath . '_IBVER' . $versionNo . "\n" . $fileVersionSize . "\n";
-	close FILE;
-
+	my $restoresetFile = Common::getCatfile(Common::getJobsPath('restore'), $AppConfig::versionRestoreFile);
+	my %fileInfo = ($fullFilePath => {
+		type => 'f',
+		ver  => $versionNo,
+		size => $fileVersionSize,
+	});
+	Common::createVersionRestoreJson('fileVersioning', \%fileInfo);	
 	return $restoresetFile;
 }
 
@@ -147,7 +164,6 @@ sub displayTableforVersionData {
 	my ($tableContent, $spaceIndex, $lineChangeIndicator) = ("", 0, 0);
 
 	foreach(@parsedVersionData) {
-		
 		if ($lineChangeIndicator == 2) {
             my $size = Common::getHumanReadableSizes($_);
             $tableContent .= $size . (' ') x ($columnNames[1]->[$spaceIndex] - length($size));

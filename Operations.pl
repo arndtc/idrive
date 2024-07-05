@@ -90,11 +90,11 @@ my $curFile = basename(__FILE__);
 my $jobRunningDir = $ARGV[$param];
 my $operationEngineId = $ARGV[$param+2];
 my $retry_failedfiles_index = $ARGV[$param+3];
+my $restoreVersion = $ARGV[$param+4];
 my ($current_source)=('');
 ($progressSizeOp,$bwThrottle,$backupPathType) = ('') x 3;#These variables are initialized in operations subroutine after reading parameters from temp_file.
 my $temp_file = "$jobRunningDir/operationsfile.txt";#This files contains value to the parameters which is used during backup, restore etc jobs. This file is written in Backup_Script.pl file and Restore_Script.pl file before call to operation file is done. In operation file various operation related to job is done.
 my $pidPath = "$jobRunningDir/pid.txt";
-my $evsTempDirPath = "$jobRunningDir/evs_temp";
 $statusFilePath = "$jobRunningDir/STATUS_FILE";
 my $retryinfo = "$jobRunningDir/".$retryinfo;
 $idevsOutputFile = "$jobRunningDir/output.txt";
@@ -179,7 +179,7 @@ sub operations
 
 		our $relative = $param[2];
 		$backupHost = $param[5];
-		getProgressDetais($progressDetailsFilePath);
+		getProgressDetails($progressDetailsFilePath);
 		if($dedup eq 'on'){
 			BackupDedupOutputParse($param[1],$param[7],$fileTransferCount,$operationEngineId);
 		} else {
@@ -216,7 +216,7 @@ sub operations
 		my $fileTransferCount = ($successFiles+$syncedFiles+$failedFilesCount+$noPermissionCount+$missingCount);
 
 		our $relative = $param[2];
-		getProgressDetais($progressDetailsFilePath);
+		getProgressDetails($progressDetailsFilePath);
 		if($dedup eq 'on') {
 			RestoreDedupOutputParse($param[1], $param[7], $fileTransferCount, $operationEngineId);
 		} else {
@@ -265,21 +265,30 @@ sub readParamNcronEntryFromOperationsFile{
 sub getCurrentFileSet{
 	my $curFileset = shift;
 	open FILESET, "< $curFileset" or Common::traceLog("Couldn't open file $curFileset $!.") and return;
-	if($curFileset =~ /versionRestore/) {
-		my $param = <FILESET>;
-		my $idx = rindex($param, "_");
-		$param = substr($param, 0, $idx);
-		$fileSetHash{$param}{'status'} = 0;
-		$fileSetHash{$param}{'detail'} = '';
-		$fileSetHash{$param}{'size'} = '';
-		push @currentFileset, $param;
-		#$versionRes = 1;
-	} else {
+    if($restoreVersion > 0) {
+        while(<FILESET>) {
+            chomp($_);
+            my @splitArr = split("_IBVER", $_);
+            $fileSetHash{$splitArr[0]}{'status'} = 0;
+            $fileSetHash{$splitArr[0]}{'detail'} = '';
+            $fileSetHash{$splitArr[0]}{'size'} = '';
+            $fileSetHash{$splitArr[0]}{'ver'} = $splitArr[1];
+            push @currentFileset, $splitArr[0];
+        }
+    } else {
 		while(<FILESET>) {
 			chomp($_);
 			$fileSetHash{$_}{'status'} = 0;
 			$fileSetHash{$_}{'detail'} = '';
-			$fileSetHash{$_}{'size'} = '';
+			if(-f $_) {
+				my $fstat = stat($_);
+				$fileSetHash{$_}{'size'} = $fstat->size;
+				$fileSetHash{$_}{'mts'} = $fstat->mtime;
+			} else {
+				$fileSetHash{$_}{'size'} = '';
+				$fileSetHash{$_}{'mts'} = '';
+			}
+
 			push @currentFileset, $_;
 		}
 	}
@@ -299,12 +308,13 @@ sub getCurrentErrorFile{
 	return $currentErrorFile;
 }
 #****************************************************************************************************
-#Subroutine Name         : getProgressDetais
+#Subroutine Name         : getProgressDetails
 #Objective               : This subroutine gives backup and restore progress details.
 #			 : This subrutine evolved after merging backupProgressDetails and restoreProgressDetails subroutine. Few parts of this subroutine has been rmoved and added at other places so that functionalities can be made common.
 #Added By                : Abhishek Verma.
+#Modified By 			 : Senthil Pandian
 #*****************************************************************************************************/
-sub getProgressDetais{
+sub getProgressDetails{
 	my ($progressDetailsFilePath) = @_;
 
 	if(-e $progressDetailsFilePath and -s $progressDetailsFilePath > 0)
@@ -313,6 +323,7 @@ sub getProgressDetais{
 			chomp(my @progressDetailsFileData = <progressDetails>);
 			$IncFileSizeByte = $progressDetailsFileData[2];
 			chomp($IncFileSizeByte);
+			$IncFileSizeByte = 0 if($IncFileSizeByte < 0);
 		}
 	}
 }
@@ -331,8 +342,10 @@ sub BackupOutputParse {
 	my $progressDetailsFilePath = "$jobRunningDir/PROGRESS_DETAILS_" . $operationEngineId;
 	my @PROGRESSFILE;
 	my $initialSlash = ($operationName eq 'BACKUP_OPERATION')? '/' : '';
+	my $completedFileSize = 0;
 
 	tie @PROGRESSFILE, 'Tie::File', $progressDetailsFilePath;
+	$completedFileSize = $PROGRESSFILE[10] if($PROGRESSFILE[10]);
 	chmod $filePermission, $progressDetailsFilePath;
 
 	my $tempIdevsOutputFile = $idevsOutputFile . '_' . $operationEngineId;
@@ -384,6 +397,7 @@ sub BackupOutputParse {
 
 				my $keyString 		= $initialSlash.$fileName{'fname'};
 				my $fileSize 	    = $fileName{'size'};
+				my $totsize 	    = $fileName{'size'};
 				my $fileBackupType  = $fileName{'trf_type'};
 				my $rateOfTransfer  = $fileName{'rate_trf'};
 
@@ -414,8 +428,11 @@ sub BackupOutputParse {
 							my $filefullpath	= $keyString;
 							$filefullpath		= $current_source . $filefullpath if($current_source ne '/');
 
-                            my $mtime = stat($filefullpath)->mtime;
-                            $mtime = Common::strftime("%m/%d/%Y %r", localtime($mtime));
+                            my $mtime = 0;
+							if(-f $filefullpath) {
+								$mtime = stat($filefullpath)->mtime;
+							}
+                            # $mtime = Common::strftime("%m/%d/%Y %r", localtime($mtime));  #Commented  to keep unixtimestamp : Senthil
                             # my $dt = strftime("%Y-%m-%d %H:%M:%S", localtime($time));
 							$cdpjobnames	= Common::getDBJobsetsByFile($jsjobselems, $filefullpath);
 							for my $i (0 .. $#{$cdpjobnames}) {
@@ -423,8 +440,17 @@ sub BackupOutputParse {
 								$dbdumpdata{$cdpdumpidx} = $curdata;
 								$cdpdumpidx++;
 							}
+							
+							$completedFileSize += $totsize;
+
+							# @TODO: remove after debug
+							# Common::traceLog("CDP IN SYNC: $filefullpath", undef, undef, 1) if($jobRunningDir =~ /CDP/);
 						} else {
 							$retVal = getFullPathofFile($keyString, $restoreFinishTime, $fileBackupType, $fileSize, 2);
+							if($retVal) {
+								$completedFileSize += $totsize;
+							}
+
 							next if($retVal == 2);
 						}
 					}
@@ -440,9 +466,16 @@ sub BackupOutputParse {
 							$filefullpath		= $current_source . $filefullpath if($current_source ne '/');
 							# $fileBackupCount++;
 							$transferredFileSize += $fileSize;
+							
+							if($percentage eq '100%') {
+								$completedFileSize += $totsize;
+							}
 
-                            my $mtime = stat($filefullpath)->mtime;
-                            $mtime = Common::strftime("%m/%d/%Y %r", localtime($mtime));
+                            my $mtime = 0;
+							if(-f $filefullpath) {
+								$mtime = stat($filefullpath)->mtime;
+							}
+                            # $mtime = Common::strftime("%m/%d/%Y %r", localtime($mtime));  #Commented  to keep unixtimestamp : Senthil
 							$cdpjobnames	= Common::getDBJobsetsByFile($jsjobselems, $filefullpath);
 							for my $i (0 .. $#{$cdpjobnames}) {
 								$curdata = {'ITEM' => $filefullpath, 'JOBNAME' => $cdpjobnames->[$i], 'DBPATH' => $upddbpaths->{$cdpjobnames->[$i]}, 'OPERATION' => 'UPDATE', 'JOBTYPE' => $jobType, 'MPC' => $mpc, 'FOLDER_ID' => $folderid, 'ENC_NAME' => $encname,'SIZE'=>$fileSize,'MOD_TIME'=>$mtime};
@@ -453,6 +486,9 @@ sub BackupOutputParse {
 							$retVal = getFullPathofFile($keyString, $restoreFinishTime, $fileBackupType, $fileSize, 1);
 							if ($retVal == 1) {
 								$transferredFileSize += $fileSize;
+								if($percentage eq '100%') {
+									$completedFileSize += $totsize;
+								}
 							} elsif($retVal == 2){
 								next;
 							}
@@ -510,6 +546,8 @@ sub BackupOutputParse {
 				$PROGRESSFILE[6] = "$currentSize";
 				$PROGRESSFILE[7] = "$percentage";
 				$PROGRESSFILE[8] = "$fileTransferCount";
+				$PROGRESSFILE[9] = "$fileSize";
+				$PROGRESSFILE[10] = "$completedFileSize";
 				$prevLen = $newLen;
 				#}
 			}
@@ -533,8 +571,7 @@ sub BackupOutputParse {
 
 		last if($skipFlag);
 	}
-# Common::traceLog("dbdumpdata:\n\n".JSON::to_json(\%dbdumpdata));
-# Common::traceLog(Dumper(\%dbdumpdata));
+
 	Common::fileWrite($cdpdump, JSON::to_json(\%dbdumpdata));
 
 	untie @PROGRESSFILE;
@@ -555,9 +592,10 @@ sub BackupDedupOutputParse {
 	my $progressDetailsFilePath = "$jobRunningDir/PROGRESS_DETAILS_".$operationEngineId;
 	my @PROGRESSFILE;
 	my $initialSlash =  ($operationName eq 'BACKUP_OPERATION')? '/' : '';
+	my $completedFileSize = 0;
 
 	tie @PROGRESSFILE, 'Tie::File', $progressDetailsFilePath;
-	$IncFileSizeByte = $PROGRESSFILE[2];
+	$completedFileSize = $PROGRESSFILE[10] if($PROGRESSFILE[10]);
 	chmod $filePermission, $progressDetailsFilePath;
 
 	my $tempIdevsOutputFile = $idevsOutputFile . '_' . $operationEngineId;
@@ -581,7 +619,8 @@ sub BackupDedupOutputParse {
 	my $upddbpaths	= Common::getCDPDBPaths();
 	my $cdpjobnames	= ();
 	my $curdata		= {};
-	my $opinode		= Common::stat($tempIdevsOutputFile)->ino;
+	# my $opinode		= Common::stat($tempIdevsOutputFile)->ino;
+	
 
 	while (1) {
 		$byteRead = read(TEMPOUTPUTFILE, $buffer, LIMIT);
@@ -614,6 +653,7 @@ sub BackupDedupOutputParse {
 
 				my $keyString 		= $initialSlash.$fileName{'fname'};
 				my $fileSize 	    = $fileName{'size'};
+				my $totsize 	    = $fileName{'size'};
 				my $fileBackupType  = $fileName{'trf_type'};
 				   #$fileBackupType =~ s/^\s+//;
 				my $rateOfTransfer  = $fileName{'rate_trf'};
@@ -638,16 +678,27 @@ sub BackupDedupOutputParse {
 							my $filefullpath = $keyString;
 							$filefullpath	 = $current_source . $filefullpath if($current_source ne '/');
                             
-                            my $mtime = stat($filefullpath)->mtime;
-                            $mtime = Common::strftime("%m/%d/%Y %r", localtime($mtime));
+                            my $mtime = 0;
+							if(-f $filefullpath) {
+								$mtime = stat($filefullpath)->mtime;
+							}
+                            # $mtime = Common::strftime("%m/%d/%Y %r", localtime($mtime));  #Commented  to keep unixtimestamp : Senthil
 							$cdpjobnames	= Common::getDBJobsetsByFile($jsjobselems, $filefullpath);
+							# @TODO: remove after debug
+							# Common::traceLog("CDP IN SYNC: $filefullpath", undef, undef, 1) if($jobRunningDir =~ /CDP/);
 							for my $i (0 .. $#{$cdpjobnames}) {
-								$curdata = {'ITEM' => $filefullpath, 'JOBNAME' => $cdpjobnames->[$i], 'DBPATH' => $upddbpaths->{$cdpjobnames->[$i]}, 'OPERATION' => 'UPDATE', 'JOBTYPE' => $jobType, 'MPC' => $mpc, 'FOLDER_ID' => $folderid, 'ENC_NAME' => $encname, 'SIZE'=>$fileSize, 'MOD_TIME'=>$mtime};
+								$curdata = {'ITEM' => $filefullpath, 'JOBNAME' => $cdpjobnames->[$i], 'DBPATH' => $upddbpaths->{$cdpjobnames->[$i]}, 'OPERATION' => 'UPDATE', 'JOBTYPE' => $jobType, 'MPC' => $mpc, 'FOLDER_ID' => $folderid, 'ENC_NAME' => $encname, 'SIZE'=>$fileSize, 'MOD_TIME' => $mtime, 'CMP_MTIME' => $fileSetHash{$keyString}{'mts'}, 'CMP_SIZE' => $fileSetHash{$keyString}{'size'}};
 								$dbdumpdata{$cdpdumpidx} = $curdata;
 								$cdpdumpidx++;
 							}
+
+							$completedFileSize += $totsize;
 						} else {
 							$fullPath = getFullPathofFile($keyString, $restoreFinishTime, $fileBackupType, $fileSize, 2);
+
+							if($fullPath) {
+								$completedFileSize += $totsize;
+							}
 						}
 					}
 					elsif($fileBackupType eq "FULL" or $fileBackupType eq "INCREMENTAL") {  	# check if file is backing up as full or incremental
@@ -662,20 +713,30 @@ sub BackupDedupOutputParse {
 								$filefullpath		= $current_source . $filefullpath if($current_source ne '/');
 								$transferredFileSize += $fileSize;
 
-                                my $mtime = stat($filefullpath)->mtime;
-                                $mtime = Common::strftime("%m/%d/%Y %r", localtime($mtime));
+								if($percentage eq '100%') {
+									$completedFileSize += $totsize;
+								}
+
+                                my $mtime = 0;
+								if(-f $filefullpath) {
+									$mtime = stat($filefullpath)->mtime;
+								}
+                                # $mtime = Common::strftime("%m/%d/%Y %r", localtime($mtime)); #Commented  to keep unixtimestamp : Senthil
+								
 								$cdpjobnames	= Common::getDBJobsetsByFile($jsjobselems, $filefullpath);
 								for my $i (0 .. $#{$cdpjobnames}) {
-									$curdata = {'ITEM' => $filefullpath, 'JOBNAME' => $cdpjobnames->[$i], 'DBPATH' => $upddbpaths->{$cdpjobnames->[$i]}, 'OPERATION' => 'UPDATE', 'JOBTYPE' => $jobType, 'MPC' => $mpc, 'FOLDER_ID' => $folderid, 'ENC_NAME' => $encname, 'SIZE'=>$fileSize, 'MOD_TIME'=>$mtime};
+									$curdata = {'ITEM' => $filefullpath, 'JOBNAME' => $cdpjobnames->[$i], 'DBPATH' => $upddbpaths->{$cdpjobnames->[$i]}, 'OPERATION' => 'UPDATE', 'JOBTYPE' => $jobType, 'MPC' => $mpc, 'FOLDER_ID' => $folderid, 'ENC_NAME' => $encname, 'SIZE' => $fileSize, 'MOD_TIME' => $mtime, 'CMP_MTIME' => $fileSetHash{$keyString}{'mts'}, 'CMP_SIZE' => $fileSetHash{$keyString}{'size'}};
 									$dbdumpdata{$cdpdumpidx} = $curdata;
 									$cdpdumpidx++;
 								}
-
 							}
 						}
 						else {
 							if (getFullPathofFile($keyString, $restoreFinishTime, $fileBackupType, $fileSize, 1) == 1) {
 								$transferredFileSize += $fileSize;
+								if($percentage eq '100%') {
+									$completedFileSize += $totsize;
+								}
 							}
 						}
 					}
@@ -728,6 +789,8 @@ sub BackupDedupOutputParse {
 				$PROGRESSFILE[6] = "$currentSize";
 				$PROGRESSFILE[7] = "$percentage";
 				$PROGRESSFILE[8] = "$fileTransferCount";
+				$PROGRESSFILE[9] = "$fileSize";
+				$PROGRESSFILE[10] = "$completedFileSize";
 				$prevLen = $newLen;
 
 			}
@@ -816,9 +879,20 @@ sub subErrorRoutine
 		}
 		chmod $filePermission, $failedfiles;
 		chomp(@failedfiles_array);
-		for(my $i = 0; $i <= $#failedfiles_array; $i++) {
-			print FAILEDLIST "$failedfiles_array[$i]\n";
-		}
+        if($restoreVersion > 1) {
+            for(my $i = 0; $i <= $#failedfiles_array; $i++) {
+                my $ver = '';
+# Common::traceLog("failedfiles_array:".$failedfiles_array[$i]);  
+                if(exists($fileSetHash{$failedfiles_array[$i]}{'ver'}) and $fileSetHash{$failedfiles_array[$i]}{'ver'} ne '') {
+                    $ver = '_IBVER'.$fileSetHash{$failedfiles_array[$i]}{'ver'};
+                }
+                print FAILEDLIST $failedfiles_array[$i].$ver."\n";
+            }
+        } else {
+            for(my $i = 0; $i <= $#failedfiles_array; $i++) {
+                print FAILEDLIST $failedfiles_array[$i]."\n";
+            }
+        }
 		close FAILEDLIST;
 
 		if(-e $failedfiles){
@@ -907,11 +981,14 @@ sub getFullPathofFile {
 				my $filefullpath	= $currentFileset[$i];
 				$filefullpath		= $current_source . $currentFileset[$i] if($current_source ne '/');
                 
-                my $mtime = stat($filefullpath)->mtime;
-                $mtime = Common::strftime("%m/%d/%Y %r", localtime($mtime));
+                my $mtime = 0;
+                if(-f $filefullpath) {
+                	$mtime = stat($filefullpath)->mtime;
+                }
+
 				$cdpjobnames	= Common::getDBJobsetsByFile($jsjobselems, $filefullpath);
 				for my $i (0 .. $#{$cdpjobnames}) {
-					$curdata = {'ITEM' => $filefullpath, 'JOBNAME' => $cdpjobnames->[$i], 'DBPATH' => $upddbpaths->{$cdpjobnames->[$i]}, 'OPERATION' => 'UPDATE', 'JOBTYPE' => $jobType, 'MPC' => $mpc, 'FOLDER_ID' => $folderid, 'ENC_NAME' => $encname, 'SIZE'=>$fileSize, 'MOD_TIME'=>$mtime};
+					$curdata = {'ITEM' => $filefullpath, 'JOBNAME' => $cdpjobnames->[$i], 'DBPATH' => $upddbpaths->{$cdpjobnames->[$i]}, 'OPERATION' => 'UPDATE', 'JOBTYPE' => $jobType, 'MPC' => $mpc, 'FOLDER_ID' => $folderid, 'ENC_NAME' => $encname, 'CMP_MTIME' => 0, 'SIZE' => $fileSize, 'MOD_TIME' => $mtime};
 					$dbdumpdata{$cdpdumpidx} = $curdata;
 					$cdpdumpidx++;
 				}
@@ -1006,7 +1083,7 @@ sub checkretryAttempt
 				Common::traceLog($errStr);
 				#kill evs and then exit
 				my $jobTerminationPath = $currentDir.'/'.Constants->FILE_NAMES->{jobTerminationScript};
-				system(Common::updateLocaleCmd("perl \'$jobTerminationPath\' \'$jobType\' \'$userName\' 1>/dev/null 2>/dev/null"));
+				system($AppConfig::perlBin . " \'$jobTerminationPath\' \'$jobType\' \'$userName\' 1>/dev/null 2>/dev/null");
 
 				$exit_flag = "1-$errStr";
 				if($jobType =~ /backup/i) {
@@ -1029,6 +1106,7 @@ sub checkretryAttempt
 					Common::saveServerAddress(Common::fetchServerAddress());
 				}
 				else {
+					Common::checkErrorAndUpdateEVSDomainStat($err); #Checking error to try with IP 
 					Common::fileWrite($errorFilePath,Constants->CONST->{'operationNotcomplete'}." Reason : ".$reason);
 					Common::traceLog("Retry Reason: $reason");
 				}
@@ -1268,8 +1346,10 @@ sub RestoreOutputParse
 	my ($prevSize,$cumulativeDataTransRate,$fileSyncCount) = (0) x 3;
 	my $progressDetailsFilePath = "$jobRunningDir/PROGRESS_DETAILS_".$operationEngineId;
 	my @PROGRESSFILE;
+	my $completedFileSize = 0;
 
 	tie @PROGRESSFILE, 'Tie::File', $progressDetailsFilePath;
+	$completedFileSize = $PROGRESSFILE[10] if($PROGRESSFILE[10]);
 	chmod $filePermission, $progressDetailsFilePath;
 
 	my $tempIdevsOutputFile = $idevsOutputFile.'_'.$operationEngineId;
@@ -1321,19 +1401,20 @@ sub RestoreOutputParse
 
 				my $restoreFinishTime = localtime;
 				my $keyString   = $pathSeparator.$fileName{'fname'};
+				$keyString = '/'.$keyString if(substr($keyString,0,1) ne '/'); 
+				$keyString =~ s/^$restoreHost// if($operationName eq 'LOCAL_RESTORE_OPERATION');
+				$keyString = Common::removeMultipleSlashs($keyString);
 				# replaceXMLcharacters(\$keyString);
 				my $restoreType = $fileName{'trf_type'};
 				$restoreType    =~ s/FILE IN//;
 				$restoreType    =~ s/\s+//;
-				# my $pKeyString  = $keyString;
+				my $pKeyString  = $keyString;
 				my $kbps        = $fileName{'rate_trf'};
 				my $fileSize    = $fileName{'size'};
-				my $currentSize = $fileName{'size'};
-				$currentSize    = $fileName{'offset'} if($fileName{'offset'});				
+				my $currentSize = defined($fileName{'offset'})?$fileName{'offset'}:$fileSize;
 				my $percentage	= $fileName{'per'};
-				$keyString =~ s/^$restoreHost// if($restoreHost ne '/' and $curFileset !~ /versionRestore/);
-				replaceXMLcharacters(\$keyString);
-				my $pKeyString = $keyString;
+				my $totsize 	= $fileName{'size'};
+
 				if($relative eq NORELATIVE) {
 					my $indx = rindex ($pKeyString, '/');
 					$pKeyString = substr($pKeyString, $indx);
@@ -1341,15 +1422,14 @@ sub RestoreOutputParse
 
 				if($tmpLine =~ m/$operationComplete/) {
 					if($restoreType eq 'SYNC') { 		# check if file in sync
-						if(defined($fileSetHash{$keyString}{'status'}) or 
-                            defined($fileSetHash{$keyString}{'status'})) {
+						if(defined($fileSetHash{$keyString}{'status'})) {
 							$fileSetHash{$keyString}{'status'} = 2;
-						} 
-                        elsif(defined($fileSetHash{$current_source.$keyString}{'status'})) {
-							$fileSetHash{$current_source.$keyString}{'status'} = 2;
-						} 
-                        else {
+							$completedFileSize += $totsize;
+						} else {
 							$fullPath = getFullPathofFile($keyString, $restoreFinishTime, $restoreType, $fileSize, 2);
+							if($fullPath) {
+								$completedFileSize += $totsize;
+							}
 						}
 						# $fileSyncCount++;
 					}
@@ -1362,6 +1442,9 @@ sub RestoreOutputParse
 								$fileSetHash{$keyString}{'size'} = $fileSize;
 								# $fileRestoreCount++;
 								$transferredFileSize += $fileSize;
+								if($percentage eq '100%') {
+									$completedFileSize += $totsize;
+								}
 							}
 						} 
 						elsif(defined($fileSetHash{$current_source.$keyString}{'status'})) {
@@ -1378,6 +1461,9 @@ sub RestoreOutputParse
 							if(getFullPathofFile($keyString, $restoreFinishTime, $restoreType, $fileSize, 1) == 1) {
 								# $fileRestoreCount++;
 								$transferredFileSize += $fileSize;
+								if($percentage eq '100%') {
+									$completedFileSize += $totsize;
+								}
 							}
 						}
                         $modifiedCount++ if($restoreType eq 'INCREMENTAL');
@@ -1433,6 +1519,7 @@ sub RestoreOutputParse
 				$PROGRESSFILE[7] = "$percentage";
 				$PROGRESSFILE[8] = $fileTransferCount;
 				$PROGRESSFILE[9] = $fileSize;
+				$PROGRESSFILE[10] = $completedFileSize;
 				$prevLen = $newLen;
 				#}
 			}
@@ -1464,6 +1551,7 @@ sub RestoreOutputParse
 	untie @PROGRESSFILE;
 	# writeTransferRateAndCount($ctrf,$fileTransferCount);
 }
+
 #****************************************************************************************************
 # Subroutine Name         : RestoreDedupOutputParse.
 # Objective               : This function parse the Dedup evs output file and creates the App
@@ -1479,8 +1567,10 @@ sub RestoreDedupOutputParse
 	my ($prevSize,$cumulativeDataTransRate,$fileSyncCount) = (0) x 3;
 	my $progressDetailsFilePath = "$jobRunningDir/PROGRESS_DETAILS_".$operationEngineId;
 	my @PROGRESSFILE;
+	my $completedFileSize = 0;
 
 	tie @PROGRESSFILE, 'Tie::File', $progressDetailsFilePath;
+	$completedFileSize = $PROGRESSFILE[10] if($PROGRESSFILE[10]);
 	chmod $filePermission, $progressDetailsFilePath;
 
 	my $tempIdevsOutputFile = $idevsOutputFile.'_'.$operationEngineId;
@@ -1535,8 +1625,9 @@ sub RestoreDedupOutputParse
 				# my $fileSize = undef;
 				#my $keyString = $pathSeparator.$fields[$fields_in_progress-2];
 				my $keyString = $pathSeparator.$fileName{'fname'};
-				$keyString =~ s/^\/$restoreHost//;
+				$keyString =~ s/^$restoreHost// if($operationName eq 'LOCAL_RESTORE_OPERATION');
 				replaceXMLcharacters(\$keyString);
+				$keyString = Common::removeMultipleSlashs($keyString);
 				my $pKeyString = $keyString;
 
 				my $restoreType = $fileName{'trf_type'};
@@ -1547,6 +1638,7 @@ sub RestoreDedupOutputParse
 				my $fileSize    = $fileName{'size'};
 				my $currentSize = defined($fileName{'offset'})?$fileName{'offset'}:$fileSize;
 				my $percentage	= $fileName{'per'};
+				my $totsize 	= $fileName{'size'};
 
 				if($relative eq NORELATIVE) {
 					my $indx = rindex ($pKeyString, '/');
@@ -1557,8 +1649,12 @@ sub RestoreDedupOutputParse
 					if($restoreType eq 'SYNC') { 		# check if file in sync
 						if(defined($fileSetHash{$keyString}{'status'})) {
 							$fileSetHash{$keyString}{'status'} = 2;
+							$completedFileSize += $totsize;
 						} else {
 							$fullPath = getFullPathofFile($keyString, $restoreFinishTime, $restoreType, $fileSize, 2);
+							if($fullPath) {
+								$completedFileSize += $totsize;
+							}
 						}
 						# $fileSyncCount++;
 					}
@@ -1571,12 +1667,18 @@ sub RestoreDedupOutputParse
                                 $fileSetHash{$keyString}{'size'} = $fileSize;
 								# $fileRestoreCount++;
 								$transferredFileSize += $fileSize;
+								if($percentage eq '100%') {
+									$completedFileSize += $totsize;
+								}
 							}
 						}
 						else {
 							if(getFullPathofFile($keyString, $restoreFinishTime, $restoreType, $fileSize, 1) == 1) {
 								# $fileRestoreCount++;
 								$transferredFileSize += $fileSize;
+								if($percentage eq '100%') {
+									$completedFileSize += $totsize;
+								}
 							}
 						}
                         $modifiedCount++ if($restoreType eq 'INCREMENTAL');
@@ -1634,6 +1736,7 @@ sub RestoreDedupOutputParse
 				$PROGRESSFILE[7] = "$percentage";
 				$PROGRESSFILE[8] = $fileTransferCount;
 				$PROGRESSFILE[9] = $fileSize;
+				$PROGRESSFILE[10] = $completedFileSize;
 				$prevLen = $newLen;
 			}
 			elsif($tmpLine =~ /$termData/is) {
@@ -1768,7 +1871,7 @@ sub getUpdateRetainedFilesList {
 	my $replace = '';
 
 	$serverRoot = Common::getUserConfiguration('BACKUPLOCATION');
-	$serverRoot = "/".Common::getUserConfiguration('SERVERROOT')	if($dedup eq 'on');
+	$serverRoot = "/".Common::getUserConfiguration('SERVERROOT') if($dedup eq 'on');
 	my $backupType = Common::getUserConfiguration('BACKUPTYPE');
 
 	for(;$j <= $#individual_errorfileContentsDetails; $j++){
@@ -1833,7 +1936,7 @@ sub reduceUpdateRetainSizeInprogress {
 # Subroutine		: reduceRetryFileSizeInprogress.
 # Objective			: Reduce the file size from progress when file is going to retry.
 # Added By			: Senthil Pandian
-# Modified By		: Sabin Cheruvattil
+# Modified By		: Sabin Cheruvattil, Senthil Pandian
 #*****************************************************************************************************/
 sub reduceRetryFileSizeInprogress {
 	my $progressDetailsFilePath = "$jobRunningDir/PROGRESS_DETAILS_".$operationEngineId;
@@ -1844,7 +1947,7 @@ sub reduceRetryFileSizeInprogress {
 			chomp($progressDetailsFileData[2]);
 			chomp($progressDetailsFileData[6]);
 			chomp($progressDetailsFileData[7]);
-			if($progressDetailsFileData[7] ne '100%' and $progressDetailsFileData[6] > 0){
+			if($progressDetailsFileData[7] ne '100%' and $progressDetailsFileData[6] > 0 and $progressDetailsFileData[2] >= $progressDetailsFileData[6]) {
 				$progressDetailsFileData[2] -= $progressDetailsFileData[6];
 			}
 			close $fh;
